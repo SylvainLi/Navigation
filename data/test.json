@@ -1,0 +1,35 @@
+{
+    "stock": {
+        "id": 9,
+        "code": "M9",
+        "name": "jehla injek\u010dn\u00ed modr\u00e1 0,6x25 mm"
+    },
+    "productDemand": [
+        {
+            "id": 1,
+            "company_id": 1,
+            "amount": 3,
+            "credit": 10
+        },
+        {
+            "id": 23,
+            "company_id": 42,
+            "amount": 3,
+            "credit": 20
+        }
+    ],
+    "productSupply": [
+        {
+            "id": 1,
+            "company_id": 1,
+            "amount": 2,
+            "price": 5
+        },
+        {
+            "id": 1,
+            "company_id": 2,
+            "amount": 1,
+            "price": 9
+        }
+    ]
+}
