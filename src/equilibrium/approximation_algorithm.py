@@ -58,7 +58,6 @@ def clean_price(market, demands, args, verbose=1):
 def get_buyer_demand(b, market, price, args):
     utility_G = get_utility_G(market, args)
     demand = 0
-    print(market.buyer_states[0][0][b][2])
     while demand <= market.offered_volume_good() + 1 and price * get_coef_bundle(market, b, demand+1) <= market.buyer_states[0][0][b][2] and price * args.final_money_reward * get_coef_bundle(market, b, demand+1) <= (utility_G(b, demand+1+market.buyers[b].supply)-utility_G(b, market.buyers[b].supply)):
         demand += 1
     demand_string = str(b) + " buys " + str(demand) + " at price: " + str(price * args.final_money_reward *
@@ -101,5 +100,6 @@ def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
             if verbose > 0:
                 print(" lower bound: ", lower_bound, "upper bound: ", price)
             upper_bound = price
-    print("")
+    if verbose > 0:
+        print("")
     return price
