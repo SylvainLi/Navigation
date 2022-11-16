@@ -36,7 +36,7 @@ def parse_json(args):
     data = json.load(data_json)
 
     args.num_buyers = get_number_of_bids(data)
-    args.consumptions = get_buyers_demand(data)
+    args.demands = get_buyers_demand(data)
     args.earnings = get_buyers_money(data)
 
     args.buyer_starting_money = 0

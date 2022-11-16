@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 from mip import *
-from machine_learning.environment import Market
+from machine_learning.environment import Marketplace
 import datetime
 from parametrize import *
 from equilibrium.model import *
@@ -16,7 +16,7 @@ usage = """usage: python name.py <path> <mode>
     """
 parse_json(args)
 
-market = Market(args, args.consumptions, args.earnings, dir_name)
+market = Marketplace(args, dir_name, multiagent=True, eval=False)
 market.resupply(args)
 args = market.args
 
@@ -27,7 +27,12 @@ if args.mode == "advice":
 elif args.mode == "predict":
 
     # Run machine learning model.
-    #             TODO
-    print("predict")
+    for crisis in range(args.episodes):
+        market.simulate_crisis(args)
+
+    seller_states = np.ones(shape=(args.num_sellers, 1))  # The actual states go here
+    buyer_states = np.ones(shape=(args.num_buyers, 2))
+    prices = market.price_good(seller_states, buyer_states)
+    print(f"We predict the price: {prices}.")	
 else:
     print(usage)

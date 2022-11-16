@@ -24,10 +24,10 @@ def clean_price(market, demands, args, verbose=1):
 
     for b in range(args.num_buyers):
         i = demands[b]
-        # if args.fairness_model == 'eternal_talmud':
+        # if args.fairness == 'talmud':
         bundle_multiplicator = 2 * \
-            (i * args.scale) - market.buyers[b].rights  # double
-        if args.fairness_model == "free_market":
+            (i * args.scale) - market.buyer_states[0][0][b][3]  # double
+        if args.fairness == "free":
             bundle_multiplicator = i*args.scale  # free market
         # The constraints are useless otherwise (and the solver is sad when I put a boolean in the constraint)
         if bundle_multiplicator != 0:
@@ -37,7 +37,7 @@ def clean_price(market, demands, args, verbose=1):
                 b].money, f"Budget constraint b{b} buys {i}"
 
             # Right amount bought constraint.
-            model += price * args.end_money_reward * bundle_multiplicator <= (utility_G(
+            model += price * args.final_money_reward * bundle_multiplicator <= (utility_G(
                 b, i+market.buyers[b].supply)-utility_G(b, market.buyers[b].supply)), f"Right amount constraint b{b} buys {i}"
     status = model.optimize()
 
@@ -58,10 +58,11 @@ def clean_price(market, demands, args, verbose=1):
 def get_buyer_demand(b, market, price, args):
     utility_G = get_utility_G(market, args)
     demand = 0
-    while demand <= market.get_total_supply() + 1 and price * get_coef_bundle(market, b, demand+1) <= market.buyers[b].money and price * args.end_money_reward * get_coef_bundle(market, b, demand+1) <= (utility_G(b, demand+1+market.buyers[b].supply)-utility_G(b, market.buyers[b].supply)):
+    print(market.buyer_states[0][0][b][2])
+    while demand <= market.offered_volume_good() + 1 and price * get_coef_bundle(market, b, demand+1) <= market.buyer_states[0][0][b][2] and price * args.final_money_reward * get_coef_bundle(market, b, demand+1) <= (utility_G(b, demand+1+market.buyers[b].supply)-utility_G(b, market.buyers[b].supply)):
         demand += 1
-    demand_string = str(b) + " buys " + str(demand) + " at price: " + str(price * args.end_money_reward *
-                                                                          get_coef_bundle(market, b, demand)) + " starting with: " + str(market.buyers[b].money) + " and "+str(market.buyers[b].rights) + "rights \n"
+    demand_string = str(b) + " buys " + str(demand) + " at price: " + str(price * args.final_money_reward *
+                                                                          get_coef_bundle(market, b, demand)) + " starting with: " + str(market.buyer_states[0][0][b][2]) + " and "+str(market.buyer_states[0][0][b][3]) + "rights \n"
     return demand, demand_string
 
 
@@ -80,7 +81,7 @@ def get_demand_given_price(market, price,  args):
 def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
     lower_bound = 0
     upper_bound = args.max_trade_price
-    total_supply = market.get_total_supply()
+    total_supply = market.offered_volume_good()
     str = ""
     
     if verbose > 0:

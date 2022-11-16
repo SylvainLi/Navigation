@@ -56,10 +56,10 @@ def plot_sequence(moneys, prices, solutions, rights, willingness_to_pay, args, t
     axs[1][0].xaxis.set_major_locator(MaxNLocator(integer=True))
     axs[1][0].yaxis.set_major_locator(MaxNLocator(integer=True))
 
-    axs[2][1].text(0.05, -0.4, f"consumptions: {args.consumptions}\nearnings: {args.earnings}\nsupply: {args.seller_resupply_model}\nseller earning: {args.seller_earning_per_day}\nuG(0)={args.missing_supply_reward}\nuG(demand)={args.in_stock_supply_reward}\n uG type: {args.utility_type}",
+    axs[2][1].text(0.05, -0.4, f"consumptions: {args.demands}\nearnings: {args.earnings}\nsupply: {args.seller_resupply_model}\nseller earning: {args.seller_earning_per_day}\nuG(0)={args.missing_supply_reward}\nuG(demand)={args.in_stock_supply_reward}\n uG type: {args.utility_type}",
                transform=axs[1][1].transAxes, fontsize=14, verticalalignment='top')
 
-    if args.fairness_model != "free_market":
+    if args.fairness != "free":
         axs[1][1].plot(range(len(rights)), rights, 'o-')
         axs[1][1].set_title("Items of right in the beginning of market.")
         axs[1][1].set_xlabel("Time in market")
@@ -84,7 +84,7 @@ def plot_sequence(moneys, prices, solutions, rights, willingness_to_pay, args, t
     for b in range(args.num_buyers):
         b_stock = [0]
         for i in range(len(solutions)):
-            b_stock += [max(0, b_stock[-1]+solutions[i][b]-args.consumptions[b])]
+            b_stock += [max(0, b_stock[-1]+solutions[i][b]-args.demands[b])]
         stocks += [b_stock[1:]]
     stocks = np.array(stocks).transpose()
     axs[2][0].plot(range(len(solutions)), stocks, 'o-')

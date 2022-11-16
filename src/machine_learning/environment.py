@@ -7,14 +7,16 @@ import datetime
 import pickle
 import random
 
-from machine_learning.agents import Buyer, Seller
-from machine_learning.agents import Buyer_Actor, Seller_Actor
+import networkx as nx
+from mip import *
 
-def get_talmud_split(needs, total_supply):
-	needs = np.array(needs)
+from machine_learning.agents import Seller, Buyer
+
+
+def talmud_split(needs, total_supply):
 	if np.sum(needs) / 2 == total_supply:
 		return needs / 2
-
+	
 	elif np.sum(needs) / 2 > total_supply:  # not even half way full
 		previous_demand = 0
 		claims = np.zeros(len(needs))
@@ -28,12 +30,12 @@ def get_talmud_split(needs, total_supply):
 			else:  # there is not enough liquid to bet to the top of the next cylinder
 				claims[i:] += total_supply / (len(needs) - i)
 				break
-
+		
 		out = np.zeros(len(needs))
 		out[sorted_indexes] = claims
 		return out
-
-	else:  # more then half is full
+	
+	else:  # more than half is full
 		previous_demand = 0
 		losses = np.zeros(len(needs))
 		sorted_indexes = np.argsort(needs)
@@ -42,726 +44,669 @@ def get_talmud_split(needs, total_supply):
 			if total_loss - (len(needs) - i) * (
 					demand - previous_demand) / 2 > 0:  # something is left over after this step
 				total_loss -= (len(needs) - i) * (demand - previous_demand) / 2
-				losses[i:] += (demand - previous_demand)/2
+				losses[i:] += (demand - previous_demand) / 2
 				previous_demand = demand
-			else:  # there is not enough liquid to bet to the top of the next cylinder
+			else:  # there is not enough liquid to get to the top of the next cylinder
 				losses[i:] += total_loss / (len(needs) - i)
 				break
-
+		
 		out = np.zeros(len(needs))
 		out[sorted_indexes] = losses
 		return needs - out
 
-class Market():
-	def __init__(self, args, consumptions, earnings, dir_name):
+
+class Marketplace():
+	def __init__(self, args, dir_name, multiagent, eval):
+		self.multiagent = multiagent
+		self.eval = eval
 		self.dir_name = dir_name
-		# Each seller knows the supply of all sellers, and supply, money and rights of all buyers
-		seller_actor = Seller_Actor(args)
-		self.sellers = [Seller(args, self, id, seller_actor) for id in range(args.num_sellers)]
-
-		self.consumptions = consumptions
-		self.earnings = earnings
-		# When buying supply, each buyer knows offered volume and price
-		# for all sellers and supply, money and rights of all buyers
-		self.buyer_observation_shape_buy = (2 * args.num_sellers + 3 * args.num_buyers + 1, )
-		# When selling rights, the buyer looks at the the same thing, but
-		# on top of that, they know the offered price and volume of rights
-		# by the other buyers.
-		self.buyer_observation_shape_sell = (2 * args.num_buyers + 3 * args.num_buyers + 1, )
-
-		self.buyers = []
-		actors = {}
-		for i, (need, earning) in enumerate(zip(consumptions, earnings)):
-			if (need, earning) in actors:
-				self.buyers.append(Buyer(args, self, need, earning, i, actors[(need, earning)]))
-			else:
-				actors[(need, earning)] = Buyer_Actor(args)
-				self.buyers.append(Buyer(args, self, need, earning, i, actors[(need, earning)]))
-
-		self.step_num = 0
-		self.greedy_step_num = 0
-		self.total_step_num = 0
-		self.step_in_episode = 0
 		self.args = args
-		self.variance = args.variance
-		self.mask_prob = args.mask_prob
-		self.log = {'buyer_mean_return': [],
-					'buyer_std_return': [],
-					'seller_mean_return': [],
-					'seller_std_return': [],
-					'supply_mean_price': [],
-					'supply_std_price': [],
-					'supply_mean_volume': [],
-					'supply_std_volume': [],
-					'right_mean_volume': [],
-					'right_std_volume': [],
-					'right_mean_price': [],
-					'right_std_price': [],
-					'des_supply_mean_volume': [],
-					'des_supply_std_volume': [],
-					'des_right_mean_volume': [],
-					'des_right_std_volume': [],
-					'des_supply_mean_price': [],
-					'des_supply_std_price': [],
-					'des_right_mean_price': [],
-					'des_right_std_price': [],
-					'frustration_max': [],
-					'frustration_mean': [],
-					'frustration_min': [],
-					'total_frustration': [],
-					'traded_rights': [],
-					'traded_supply': [],
-					'ending_supply_mean': [],
-					'ending_supply_std': [],
-					'ending_buyer_supply_mean': [],
-					'ending_buyer_supply_std': [],
-					'ending_money_mean': [],
-					'ending_money_std': []}
-		self.greedy_log = {'buyer_mean_return': [],
-					'buyer_std_return': [],
-					'seller_mean_return': [],
-					'seller_std_return': [],
-					'supply_mean_price': [],
-					'supply_std_price': [],
-					'supply_mean_volume': [],
-					'supply_std_volume': [],
-					'right_mean_volume': [],
-					'right_std_volume': [],
-					'right_mean_price': [],
-					'right_std_price': [],
-					'des_supply_mean_volume': [],
-					'des_supply_std_volume': [],
-					'des_right_mean_volume': [],
-					'des_right_std_volume': [],
-					'des_supply_mean_price': [],
-					'des_supply_std_price': [],
-					'des_right_mean_price': [],
-					'des_right_std_price': [],
-					'frustration_max': [],
-					'frustration_mean': [],
-					'frustration_min': [],
-					'total_frustration': [],
-					'traded_rights': [],
-					'traded_supply': [],
-					'ending_supply_mean': [],
-					'ending_supply_std': [],
-					'ending_buyer_supply_mean': [],
-					'ending_buyer_supply_std': [],
-					'ending_money_mean': [],
-					'ending_money_std': []}
-
-		self.memory_len = args.max_memory_len
-		# States of sellers - for each seller we remember step_num(0), supply(1), offered volume(2) and price(3) and reward (4=-1)
-		self.seller_states = np.zeros(shape=(self.memory_len, args.num_sellers, 5), dtype=np.float32)
-		self.greedy_seller_states = np.zeros(shape=(self.memory_len, args.num_sellers, 5))
-
-		# For buyers we remember their
-		# step_num(0), supply(1), money(2), rights(3), offered volume(4) and price(5) of rights,
-		# desired volume (6) and price (7) of supplies, vol (8) and price (9) of rights and reward(10)
-		# frustration (11), traded rights (12) and traded supply (13)
-		self.buyer_states = np.zeros(shape=(self.memory_len, args.num_buyers, 14), dtype=np.float32)
-		self.greedy_buyer_states = np.zeros(shape=(self.memory_len, args.num_buyers, 14), dtype=np.float32)
-
-		self.traded_rights = np.zeros(shape=(args.steps_in_episode, ))
-		self.traded_supply = np.zeros(shape=(args.steps_in_episode, ))
-
-	@tf.function
-	def make_offers_tf(self, buyer_states, seller_states):
-		offers_volume = tf.TensorArray(tf.float32, size=self.args.num_sellers)
-		offers_price = tf.TensorArray(tf.float32, size=self.args.num_sellers)
-		for id, seller in enumerate(self.sellers):
-			action = seller.predict(buyer_states[tf.newaxis, ...], seller_states[tf.newaxis, id, ...])[0]
-
-			offers_volume = offers_volume.write(id, action[0])
-			offers_price = offers_price.write(id, action[1])
-
-		offers_volume = offers_volume.stack()
-		offers_price = offers_price.stack()
-		return offers_volume, offers_price
-
-	def make_offers(self, greedy):
-		if greedy:
-			for i, seller in enumerate(self.sellers):
-				assert seller.supply >= 0, 'Seller supplies negative'
-				self.greedy_seller_states[self.greedy_step_num, i, 1] = seller.supply
-
-			for i, buyer in enumerate(self.buyers):
-				assert buyer.supply >= 0, 'Buyer supplies negative'
-				assert buyer.money >= 0, 'Buyer money negative'
-				assert buyer.rights >= 0, 'Buyer rights negative'
-				self.greedy_buyer_states[self.greedy_step_num, i, 1] = buyer.supply
-				self.greedy_buyer_states[self.greedy_step_num, i, 2] = buyer.money
-				self.greedy_buyer_states[self.greedy_step_num, i, 3] = buyer.rights
-
-			buyer_states = self.greedy_buyer_states[self.greedy_step_num, :, 1:4]
-			seller_states = self.greedy_seller_states[self.greedy_step_num, :, 1:2]
-
-		else:
-			for i, seller in enumerate(self.sellers):
-				assert seller.supply >= 0, 'Seller supplies negative'
-				self.seller_states[self.step_num, i, 1] = seller.supply
-
-			for i, buyer in enumerate(self.buyers):
-				assert buyer.supply >= 0, 'Buyer supplies negative'
-				assert buyer.money >= 0, 'Buyer money negative'
-				assert buyer.rights >= 0, 'Buyer rights negative'
-				self.buyer_states[self.step_num, i, 1] = buyer.supply
-				self.buyer_states[self.step_num, i, 2] = buyer.money
-				self.buyer_states[self.step_num, i, 3] = buyer.rights
-
-			buyer_states = self.buyer_states[self.step_num, :, 1:4]
-			seller_states = self.seller_states[self.step_num, :, 1:2]
-
-		offers_volume, offers_price = self.make_offers_tf(buyer_states, seller_states)
-
-		if greedy:
-			self.greedy_seller_states[self.greedy_step_num, :, 2] = offers_volume
-			self.greedy_seller_states[self.greedy_step_num, :, 3] = offers_price
-		else:
-			mask = np.random.choice([self.args.mask_const, 1], size=offers_volume.shape, p=[self.mask_prob, 1-self.mask_prob])
-			noise = np.random.normal(loc=0, scale=self.variance, size=offers_volume.shape)
-			offers_volume = mask * np.clip(offers_volume + noise, a_min=0, a_max=1)
-			mask = np.random.choice([self.args.mask_const, 1], size=offers_price.shape, p=[self.mask_prob, 1-self.mask_prob])
-			noise = np.random.normal(loc=0, scale=self.variance, size=offers_price.shape)
-			offers_price = mask * np.clip(offers_price + noise, a_min=0, a_max=1)
-
-			self.seller_states[self.step_num, :, 2] = offers_volume
-			self.seller_states[self.step_num, :, 3] = offers_price
-
-	@tf.function
-	def offer_rights_tf(self, seller_offers, buyer_states):
-		actions = tf.TensorArray(tf.float32, size=self.args.num_buyers)
-		for i, buyer in enumerate(self.buyers):
-			action = buyer.predict_sell_action(seller_offers[tf.newaxis, ...], buyer_states[tf.newaxis, i, ...])[0]
-
-			actions = actions.write(i, action)
-
-		actions = actions.stack()
-		return actions
-
-	def offer_rights(self, greedy):
-		if greedy:
-			seller_states = self.greedy_seller_states[self.greedy_step_num, :, 2:4].copy()
-			seller_states[:, 0] = seller_states[:, 0] * self.greedy_seller_states[self.greedy_step_num, :, 1].copy()
-			seller_states[:, 1] = seller_states[:, 1] * self.args.max_trade_price
-
-			buyer_states = self.greedy_buyer_states[self.greedy_step_num, :, 1:4].copy()
-
-		else:
-			seller_states = self.seller_states[self.step_num, :, 2:4].copy()
-			seller_states[:, 0] = seller_states[:, 0] * self.seller_states[self.step_num, :, 1].copy()
-			seller_states[:, 1] = seller_states[:, 1] * self.args.max_trade_price
-
-			buyer_states = self.buyer_states[self.step_num, :, 1:4].copy()
-
-		actions = self.offer_rights_tf(seller_states, buyer_states)
-
-		if greedy:
-			self.greedy_buyer_states[self.greedy_step_num, :, 4:6] = actions
-		else:
-			mask = np.random.choice([self.args.mask_const_rights, 1], size=actions.shape, p=[self.mask_prob, 1-self.mask_prob])
-			noise = np.random.normal(loc=0, scale=self.variance, size=actions.shape)
-			actions = mask * np.clip(actions + noise, a_min=0, a_max=1)
-
-			self.buyer_states[self.step_num, :, 4:6] = actions
-
-	@tf.function
-	def order_supply_tf(self, seller_offers, buyer_states, rights_offers):
-		actions = tf.TensorArray(tf.float32, size=self.args.num_buyers)
-		for i, buyer in enumerate(self.buyers):
-			other_rights = tf.concat([rights_offers[:i], rights_offers[i+1:]], axis=0)
-			action = buyer.predict_buy_action(seller_offers[tf.newaxis, ...], buyer_states[tf.newaxis, i, ...],
-											  other_rights[tf.newaxis, ...])[0]
-
-			actions = actions.write(i, action)
-
-		actions = actions.stack()
-		return actions
-
-	def order_supply(self, greedy):
-		if greedy:
-			buyer_states = self.greedy_buyer_states[self.greedy_step_num, :, 1:4].copy()
-
-			seller_states = self.greedy_seller_states[self.greedy_step_num, :, 2:4].copy()
-			seller_states[:, 0] = seller_states[:, 0] * self.greedy_seller_states[self.greedy_step_num, :, 1].copy()
-			seller_states[:, 1] = seller_states[:, 1] * self.args.max_trade_price
-
-			rights_offers = self.greedy_buyer_states[self.greedy_step_num, :, 4:6].copy()
-			rights_offers[:, 0] = rights_offers[:, 0] * self.greedy_buyer_states[self.greedy_step_num, :, 3].copy()
-			rights_offers[:, 1] = rights_offers[:, 1] * self.args.max_trade_price
-
-		else:
-			buyer_states = self.buyer_states[self.step_num, :, 1:4].copy()
-
-			seller_states = self.seller_states[self.step_num, :, 2:4].copy()
-			seller_states[:, 0] = seller_states[:, 0] * self.seller_states[self.step_num, :, 1].copy()
-			seller_states[:, 1] = seller_states[:, 1] * self.args.max_trade_price
-
-			rights_offers = self.buyer_states[self.step_num, :, 4:6].copy()
-			rights_offers[:, 0] = rights_offers[:, 0] * self.buyer_states[self.step_num, :, 3].copy()
-			rights_offers[:, 1] = rights_offers[:, 1] * self.args.max_trade_price
-
-		actions = self.order_supply_tf(seller_states, buyer_states, rights_offers)
-
-		if greedy:
-			self.greedy_buyer_states[self.greedy_step_num, :, 6:10] = actions
-		else:
-			mask = np.random.choice([self.args.mask_const, 1], size=actions.shape, p=[self.mask_prob, 1-self.mask_prob])
-			noise = np.random.normal(loc=0, scale=self.variance, size=actions.shape)
-			actions = mask * np.clip(actions + noise, a_min=0, a_max=1)
-
-			self.buyer_states[self.step_num, :, 6:10] = actions
-
-	def trade_rights(self, greedy):
-		if not self.args.fairness_model[-6:] == 'talmud':
-			return
-
-		if greedy:
-			offered_volume = self.greedy_buyer_states[self.greedy_step_num, :, 4].copy()
-			offered_volume = offered_volume * np.array([buyer.rights for buyer in self.buyers]) #self.buyer_states[self.step_num, :, 3].copy()
-			offered_price = self.greedy_buyer_states[self.greedy_step_num, :, 5].copy() * self.args.max_trade_price
-
-			desired_volume = self.greedy_buyer_states[self.greedy_step_num, :, 8].copy() * self.args.max_trade_volume
-			desired_price = self.greedy_buyer_states[self.greedy_step_num, :, 9].copy() * self.args.max_trade_price
-
-		else:
-			offered_volume = self.buyer_states[self.step_num, :, 4].copy()
-			offered_volume = offered_volume * np.array([buyer.rights for buyer in self.buyers]) #self.buyer_states[self.step_num, :, 3].copy()
-			offered_price = self.buyer_states[self.step_num, :, 5].copy() * self.args.max_trade_price
-
-			desired_volume = self.buyer_states[self.step_num, :, 8].copy() * self.args.max_trade_volume
-			desired_price = self.buyer_states[self.step_num, :, 9].copy() * self.args.max_trade_price
-
-		sold = np.zeros(shape=(self.args.trade_cycles, len(self.buyers), 2))
-		bought = np.zeros(shape=(self.args.trade_cycles, len(self.buyers), 2))
-		buyer_money = np.repeat([np.array([buyer.money for buyer in self.buyers])], self.args.trade_cycles, axis=0)
-		for cycle in range(self.args.trade_cycles):
-			for buyer_id in np.random.permutation(len(self.buyers)):
-				for seller_id in np.random.permutation(len(self.buyers)):
-					if buyer_id == seller_id:
-						continue
-					if desired_price[buyer_id] < offered_price[seller_id]:
-						continue
-
-					leftover_volume = offered_volume[seller_id] - sold[cycle, seller_id, 0]
-					still_desired_volume = desired_volume[buyer_id] - bought[cycle, buyer_id, 0]
-
-					if offered_price[seller_id] > 0:
-						affordable_vol = buyer_money[cycle, buyer_id] / offered_price[seller_id]
-						vol_to_buy = min(affordable_vol, leftover_volume, still_desired_volume) - 1e-4
-					else:
-						vol_to_buy = min(leftover_volume, still_desired_volume) - 1e-4
-
-					if vol_to_buy > self.args.min_trade_volume:
-						sold[cycle, seller_id, 0] += vol_to_buy
-						bought[cycle, buyer_id, 0] += vol_to_buy
-
-						money_to_pay = vol_to_buy * offered_price[seller_id]
-						sold[cycle, seller_id, 1] += money_to_pay
-						bought[cycle, buyer_id, 1] += money_to_pay
-						buyer_money[cycle, buyer_id] -= money_to_pay
-
-		total_trade_buyer = np.mean(bought, axis=0)
-		total_trade_seller = np.mean(sold, axis=0)
-
-		for buyer_id in range(self.args.num_buyers):
-			traded_rights = total_trade_buyer[buyer_id, 0]
-			self.buyers[buyer_id].rights += traded_rights
-			self.buyers[buyer_id].money -= total_trade_buyer[buyer_id, 1]
-			if greedy:
-				self.greedy_buyer_states[self.greedy_step_num, buyer_id, 12] = traded_rights
-			else:
-				self.buyer_states[self.step_num, buyer_id, 12] = traded_rights
-
-		for seller_id in range(self.args.num_buyers):
-			self.buyers[seller_id].rights -= total_trade_seller[seller_id, 0]
-			self.buyers[seller_id].money += total_trade_seller[seller_id, 1]
-
-		self.traded_rights[self.step_in_episode] = np.sum(total_trade_buyer[:, 0])
-
-	def trade_supply(self, greedy):
-		if greedy:
-			offered_volume = self.greedy_seller_states[self.greedy_step_num, :, 2].copy()
-			offered_volume = offered_volume * np.array([seller.supply for seller in self.sellers])
-			offered_price = self.greedy_seller_states[self.greedy_step_num, :, 3].copy() * self.args.max_trade_price
-
-			desired_volume = self.greedy_buyer_states[self.greedy_step_num, :, 6].copy() * self.args.max_trade_volume
-			desired_price = self.greedy_buyer_states[self.greedy_step_num, :, 7].copy() * self.args.max_trade_price
-
-		else:
-			offered_volume = self.seller_states[self.step_num, :, 2].copy()
-			offered_volume = offered_volume * np.array([seller.supply for seller in self.sellers])
-			offered_price = self.seller_states[self.step_num, :, 3].copy() * self.args.max_trade_price
-
-			desired_volume = self.buyer_states[self.step_num, :, 6].copy() * self.args.max_trade_volume
-			desired_price = self.buyer_states[self.step_num, :, 7].copy() * self.args.max_trade_price
-
-		sold = np.zeros(shape=(self.args.trade_cycles, len(self.buyers), 2))
-		bought = np.zeros(shape=(self.args.trade_cycles, len(self.buyers), 2))
-		buyer_money = np.repeat([np.array([buyer.money for buyer in self.buyers])], self.args.trade_cycles, axis=0)
-		buyer_rights = np.repeat([np.array([buyer.rights for buyer in self.buyers])], self.args.trade_cycles, axis=0)
-		for cycle in range(self.args.trade_cycles):
-			for buyer_id in np.random.permutation(len(self.buyers)):
-				for seller_id in np.random.permutation(len(self.sellers)):
-					if desired_price[buyer_id] < offered_price[seller_id]:
-						continue
-
-					right_volume = buyer_rights[cycle, buyer_id] if self.args.fairness_model[-6:] == 'talmud' else self.args.max_trade_volume
-					leftover_volume = offered_volume[seller_id] - sold[cycle, seller_id, 0]
-					still_desired_volume = desired_volume[buyer_id] - bought[cycle, buyer_id, 0]
-
-					if offered_price[seller_id] > 0:
-						affordable_vol = buyer_money[cycle, buyer_id] / offered_price[seller_id]
-						vol_to_buy = min(affordable_vol, right_volume, leftover_volume, still_desired_volume) - 1e-4
-					else:
-						vol_to_buy = min(right_volume, leftover_volume, still_desired_volume) - 1e-4
-
-					if vol_to_buy > self.args.min_trade_volume:
-						sold[cycle, seller_id, 0] += vol_to_buy
-						bought[cycle, buyer_id, 0] += vol_to_buy
-
-						money_to_pay = vol_to_buy * offered_price[seller_id]
-						sold[cycle, seller_id, 1] += money_to_pay
-						bought[cycle, buyer_id, 1] += money_to_pay
-
-						buyer_money[cycle, buyer_id] -= money_to_pay
-						buyer_rights[cycle, buyer_id] -= vol_to_buy
-
-		total_trade_buyer = np.mean(bought, axis=0)
-		total_trade_seller = np.mean(sold, axis=0)
-
-		for buyer_id in range(self.args.num_buyers):
-			traded_supply = total_trade_buyer[buyer_id, 0]
-			self.buyers[buyer_id].supply += traded_supply
-			self.buyers[buyer_id].frustration -= traded_supply
-			self.buyers[buyer_id].money -= total_trade_buyer[buyer_id, 1]
-			if greedy:
-				self.greedy_buyer_states[self.greedy_step_num, buyer_id, 13] = traded_supply
-			else:
-				self.buyer_states[self.step_num, buyer_id, 13] = traded_supply
-
-		for seller_id in range(self.args.num_sellers):
-			self.sellers[seller_id].supply -= total_trade_seller[seller_id, 0]
-
-		seller_rewards = total_trade_seller[:, 1]
-
-		self.traded_supply[self.step_in_episode] = np.sum(total_trade_buyer[:, 0])
-
-		return seller_rewards
-
+		self.sellers = [Seller(args, s) for s in range(args.num_sellers)]
+		self.buyers = [Buyer(args, b) for b in range(args.num_buyers)]
+		
+		self.demands = args.demands / np.mean(args.demands)
+		self.earnings = args.earnings / np.mean(args.earnings)
+		
+		self.ep_num, self.step_num = 0, 0
+		
+		# SELLER SHAPE
+		# (0) Market num [0,1], (1) seller Good, (2) offered volume percentage [0,1],
+		# (3) offered price percentage [0,1], (4) reward, (5) Good after trading
+		
+		# BUYER SHAPE
+		# (0) Market num [0,1], (1) Good, (2) Money, (3) Right,
+		# (4) offered volume percentage [0,1], (5) offered price percentage [0,1] of Right
+		# (6) desired volume percentage [0,1], (7) desired price percentage [0,1] of Good
+		# (8) desired volume percentage [0,1], (9) desired price percentage [0,1] of Right
+		# (10) reward, (11) Good, (12) Money, (13) Right after trading
+		
+		seller_shape = (args.episodes, args.steps_in_episode, args.num_sellers, 6)
+		buyer_shape = (args.episodes, args.steps_in_episode, args.num_buyers, 14)
+		
+		self.seller_states = np.zeros(shape=seller_shape, dtype=np.float32)
+		self.buyer_states = np.zeros(shape=buyer_shape, dtype=np.float32)
+		
+	def offered_volume_good(self):
+		return self.seller_states[self.ep_num, self.step_num, :, 1] * self.seller_states[self.ep_num, self.step_num, :, 2]
+	
+	def scaled_seller_state(self):
+		seller_states = self.seller_states[self.ep_num, self.step_num, :, :5].copy()
+		seller_states[:, 2] = seller_states[:, 2] * seller_states[:, 1]
+		seller_states[:, 3] = seller_states[:, 3] * self.args.max_trade_price
+		return seller_states
+	
+	def scaled_seller_states(self):
+		seller_states = self.seller_states.copy()
+		seller_states[..., 2] = seller_states[..., 2] * seller_states[..., 1]
+		seller_states[..., 3] = seller_states[..., 3] * self.args.max_trade_price
+		return seller_states
+	
+	def scaled_buyer_state(self):
+		buyer_states = self.buyer_states[self.ep_num, self.step_num, :, :11].copy()
+		buyer_states[:, 4] = buyer_states[:, 4] * buyer_states[:, 3]
+		buyer_states[:, 5] *= self.args.max_trade_price
+		buyer_states[:, 6] *= self.args.max_trade_volume
+		buyer_states[:, 7] *= self.args.max_trade_price
+		buyer_states[:, 8] *= self.args.max_trade_volume
+		buyer_states[:, 9] *= self.args.max_trade_price
+		return buyer_states
+	
+	def scaled_buyer_states(self):
+		buyer_states = self.buyer_states.copy()
+		buyer_states[..., 4] = buyer_states[..., 4] * buyer_states[..., 3]
+		buyer_states[..., 5] *= self.args.max_trade_price
+		buyer_states[..., 6] *= self.args.max_trade_volume
+		buyer_states[..., 7] *= self.args.max_trade_price
+		buyer_states[..., 8] *= self.args.max_trade_volume
+		buyer_states[..., 9] *= self.args.max_trade_price
+		return buyer_states
+	
 	def resupply(self, args):
-		# Give sellers rewards for selling and add new supply to them
-		new_supplies = 0
-		for seller in self.sellers:
-			if args.seller_resupply_model == 'constant':
-				new_supply = args.seller_earning_per_day
-			elif args.seller_resupply_model == 'rand_constant':
-				new_supply = int(np.round(np.random.normal(loc=args.seller_earning_per_day,
-											  scale=args.seller_earning_per_day / 10)))
-			elif args.seller_resupply_model == 'cos':
-				cos_factor = (np.cos(self.step_in_episode * 2 * np.pi / args.steps_in_episode) + 2) / 2
-				new_supply = args.seller_earning_per_day * cos_factor
-			elif args.seller_resupply_model == 'rand_cos':
-				cos_factor = (np.cos(self.step_in_episode * 2 * np.pi / args.steps_in_episode) + 2) / 2
-				new_supply = np.random.normal(loc=args.seller_earning_per_day * cos_factor,
-											  scale=args.seller_earning_per_day / 10)
-			elif args.seller_resupply_model == 'array':
-				# assert len(args.resupply_array) == args.num_sellers and [len(args.resupply_array[i]) == args.steps_in_episode for i in range(args.num_sellers) ].all()
-				assert(len(args.resupply_array) == args.steps_in_episode)
-				print(self.step_num,  args.steps_in_episode,"\n")
-				new_supply = args.resupply_array[self.step_num]
+		# Give new Good to sellers
+		if args.seller_resupply_model == 'constant':
+			new_good = args.seller_earning_per_day * np.ones(args.num_sellers)
+		elif args.seller_resupply_model == 'rand_constant':
+			new_good = np.maximum(np.random.normal(args.seller_earning_per_day, args.seller_earning_per_day / 10), 0)
+		else:
+			raise Exception('Unknown resupply model.')
+		
+		if args.perishing_good or self.step_num == 0:
+			self.seller_states[self.ep_num, self.step_num, :, 1] = new_good
+		else:
+			self.seller_states[self.ep_num, self.step_num, :, 1] += new_good
+		
+		# Give buyers more Money
+		if self.step_num == 0:
+			self.buyer_states[self.ep_num, self.step_num, :, 2] = args.buyer_earning_per_day * self.earnings
+		else:
+			self.buyer_states[self.ep_num, self.step_num, :, 2] += args.buyer_earning_per_day * self.earnings
+	
+	@tf.function
+	def offer_good_tf(self, seller_states, buyer_states):
+		actions = tf.TensorArray(tf.float32, size=self.args.num_sellers)
+		for i, seller in enumerate(self.sellers):
+			action = seller.action(seller_states[tf.newaxis, i, ...], buyer_states[tf.newaxis, ...])[0]
+			
+			actions = actions.write(i, action)
+		
+		actions = actions.stack()
+		return actions
+	
+	def offer_good(self):
+		seller_states = self.buyer_states[self.ep_num, self.step_num, :, 1:2].copy()
+		buyer_states = self.buyer_states[self.ep_num, self.step_num, :, 1:3].copy()
+		
+		actions = self.offer_good_tf(seller_states, buyer_states)
+		
+		self.seller_states[self.ep_num, self.step_num, :, 2:4] = actions
+	
+	def distribute_right(self):
+		offered_volume = np.sum(self.offered_volume_good())
+		need = np.maximum(self.demands - self.buyer_states[self.ep_num, self.step_num, :, 1], 0)
+		new_rights = talmud_split(need, offered_volume)
+		self.buyer_states[self.ep_num, self.step_num, :, 3] = new_rights
+	
+	@tf.function
+	def offer_right_tf(self, seller_states, buyer_states):
+		actions = tf.TensorArray(tf.float32, size=self.args.num_buyers)
+		for i, buyer in enumerate(self.buyers):
+			action = buyer.sell_action(seller_states[tf.newaxis, ...], buyer_states[tf.newaxis, ...])[0]
+			
+			actions = actions.write(i, action)
+		
+		actions = actions.stack()
+		return actions
+	
+	def offer_right(self):
+		seller_states = self.scaled_seller_state()[:, 2:4]
+		buyer_states = self.buyer_states[self.ep_num, self.step_num, :, 1:4].copy()
+		
+		actions = self.offer_right_tf(seller_states, buyer_states)
+		
+		self.buyer_states[self.ep_num, self.step_num, :, 4:6] = actions
+	
+	@tf.function
+	def make_orders_tf(self, seller_states, buyer_states):
+		actions = tf.TensorArray(tf.float32, size=self.args.num_buyers)
+		for i, buyer in enumerate(self.buyers):
+			action = buyer.buy_action(seller_states[tf.newaxis, ...], buyer_states[tf.newaxis, ...])[0]
+			
+			actions = actions.write(i, action)
+		
+		actions = actions.stack()
+		return actions
+	
+	def make_orders(self):
+		seller_states = self.scaled_seller_state()[:, 2:4]
+		buyer_states = self.scaled_buyer_state()[:, 1:6]
+		
+		actions = self.make_orders_tf(seller_states, buyer_states)
+		
+		self.buyer_states[self.ep_num, self.step_num, :, 6:10] = actions
+	
+	def greedy_market_mechanism(self, args):
+		seller_states = self.scaled_seller_state()[:, :4]
+		buyer_states = self.scaled_buyer_state()[:, :10]
+		
+		vol_good, prc_good = seller_states[:, 2], seller_states[:, 3]
+		vol_right, prc_right = buyer_states[:, 4], buyer_states[:, 5]
+		des_vol_good, des_prc_good = buyer_states[:, 6], buyer_states[:, 7]
+		des_vol_right, des_prc_right = buyer_states[:, 8], buyer_states[:, 9]
+		available_right = buyer_states[:, 3] - vol_right
+		available_money = buyer_states[:, 2]
+		
+		if args.market_model == 'greedy':
+			buying_order = np.argsort(des_prc_good)[::-1]
+			seller_order = np.argsort(prc_good)
+			right_seller_order = np.argsort(prc_right)
+		else:
+			buying_order = np.random.permutation(args.num_buyers)
+			seller_order = np.random.permutation(args.num_sellers)
+			right_seller_order = np.random.permutation(args.num_buyers)
+		
+		g = np.zeros(shape=(args.num_sellers, args.num_buyers))
+		r = np.zeros(shape=(args.num_buyers, args.num_buyers))
+		
+		for b in buying_order:
+			# First, buy whatever you can with available Right
+			for s in seller_order:
+				if prc_good[s] > des_prc_good[b]:
+					continue
+				
+				right_vol = available_right[b] if args.fairness[-6:] == 'talmud' else args.max_trade_volume
+				affordable_vol = available_money[b] / prc_good[s] if prc_good[s] > 0 else args.max_trade_volume
+				
+				vol_to_buy = min(right_vol, affordable_vol, vol_good[s], des_vol_good[b]) - 1e-4
+				if vol_to_buy > 0:
+					g[s, b] += vol_to_buy
+					vol_good[s] -= vol_to_buy
+					des_vol_good[b] -= vol_to_buy
+					available_money[b] -= vol_to_buy * prc_good[s]
+					available_right[b] -= vol_to_buy
+			
+			# Second, buy Right and Good in pairs starting with the cheapest offer
+			for s in seller_order:
+				for t in right_seller_order:
+					if prc_good[s] > des_prc_good[b] or prc_right[t] > des_prc_right[b] or t == b:
+						continue
+					
+					affordable_vol = available_money[b] / (prc_good[s] + prc_right[t]) if prc_good[s] + prc_right[
+						t] > 0 else args.max_trade_volume
+					
+					vol_to_buy = min(affordable_vol, vol_good[s], vol_right[t], des_vol_good[b],
+									 des_vol_right[b]) - 1e-4
+					if vol_to_buy > 0:
+						g[s, b] += vol_to_buy
+						r[t, b] += vol_to_buy
+						vol_good[s] -= vol_to_buy
+						vol_right[t] -= vol_to_buy
+						des_vol_good[b] -= vol_to_buy
+						des_vol_right[b] -= vol_to_buy
+						available_money[b] -= vol_to_buy * (prc_good[s] + prc_right[t])
+		
+		e, s = self.ep_num, self.step_num
+		
+		# Copy whatever I had last market
+		self.seller_states[e, s, :, 5:6] = self.seller_states[e, s, :, 1:2].copy()
+		self.buyer_states[e, s, :, 11:14] = self.buyer_states[e, s, :, 1:4].copy()
+
+		# Good
+		self.seller_states[e, s, :, 5] -= np.sum(g, axis=1)
+		self.buyer_states[e, s, :, 11] += np.sum(g, axis=0)
+		
+		# Money
+		cost_right = np.sum((r.T * prc_right).T, axis=0)
+		cost_supply = np.sum((g.T * prc_good).T, axis=0)
+		cost = cost_right + cost_supply
+		earning = np.sum(r, axis=1) * prc_right
+		self.buyer_states[e, s, :, 12] += earning - cost
+		
+		# Right
+		next_right = available_right + vol_right - np.sum(r, axis=1)
+		self.buyer_states[e, s, :, 13] = next_right
+	
+	def max_flow_market_mechanism(self, args):
+		seller_states = self.scaled_seller_state()[:, :4]
+		buyer_states = self.scaled_buyer_state()[:, :10]
+		
+		vol_good, prc_good = seller_states[:, 2], seller_states[:, 3]
+		vol_right, prc_right = buyer_states[:, 4], buyer_states[:, 5]
+		des_vol_good, des_prc_good = buyer_states[:, 6], buyer_states[:, 7]
+		des_vol_right, des_prc_right = buyer_states[:, 8], buyer_states[:, 9]
+		available_right = buyer_states[:, 3] - vol_right
+		available_money = buyer_states[:, 2]
+		
+		verbose = 0
+		epsilon = 1e-4
+		
+		model = Model(sense=MAXIMIZE, solver_name=CBC)
+		
+		model.threads = self.args.threads
+		model.verbose = 0
+		
+		## Variables
+		
+		S = range(self.args.num_sellers)
+		T = range(self.args.num_buyers)
+		B = range(self.args.num_buyers)
+		
+		#   If the buyer b is buying i items b_i = 1, 0 otherwise.
+		g = np.array([[model.add_var(var_type=CONTINUOUS, name=(f"g[{s},{b}]")) for b in B] for s in S])
+		r = np.array([[model.add_var(var_type=CONTINUOUS, name=(f"r[{t},{b}]")) for b in B] for t in T])
+		
+		min = model.add_var(var_type=CONTINUOUS, name=("min"))
+		max = model.add_var(var_type=CONTINUOUS, name=("max"))
+		
+		## Objective
+		
+		upper_bound = 1000
+		model.objective = upper_bound * xsum([xsum([g[s][b] for s in S]) for b in B])# + min - max
+		
+		## Constraints
+		
+		# We assume no conflict between buyer, seller and trader.
+		for b in B:
+			for s in S:
+				# Positivity.
+				model += g[s][b] >= 0
+			for t in T:
+				# Positivity
+				model += r[t][b] >= 0
+		
+		for b in B:
+			model += xsum(g[s][b] for s in S) >= min
+			model += xsum(g[s][b] for s in S) <= max
+			
+			# Not above demand.
+			model += xsum(g[s][b] for s in S) <= des_vol_good[b]
+			model += xsum(r[t][b] for t in T) <= des_vol_right[b]
+			
+			# Affordability constraint
+			model += xsum(g[s][b] * prc_good[s] for s in S) + xsum(r[t][b] * prc_right[t] for t in T) <= np.clip(available_money[b] - epsilon, 0, np.inf)
+			
+			# As much right as good.
+			if self.args.fairness[-6:] == 'talmud':
+				model += xsum(g[s][b] for s in S) <= xsum(r[t][b] for t in T) + np.clip(available_right[b] - epsilon, 0, np.inf)
+			
+			# No self-trading
+			model += r[b][b] == 0
+			
+			# Constrain average price
+			if args.market_model == 'average':
+				model += xsum(g[s][b] * prc_good[s] for s in S) <= des_prc_good[b] * xsum(g[s][b] for s in S)
+				model += xsum(r[t][b] * prc_right[t] for t in T) <= des_prc_right[b] * xsum(r[t][b] for t in T)
 			else:
-				raise NotImplementedError('Unknown seller resupply model.')
+				for s in S:
+					if prc_good[s] > 0:
+						model += g[s][b] * prc_good[s] <= des_prc_good[b] * g[s][b]
+				for t in T:
+					if prc_right[t] > 0:
+						model += r[t][b] * prc_right[t] <= des_prc_right[b] * r[t][b]
+		
+			# Higher percentage constraint
+			#for t in T:
+			#	if des_prc_good[b] > des_prc_good[t]:
+			#		model += xsum(g[s][b] for s in S) / self.demands[b] >= xsum(g[s][t] for s in S) / self.demands[t]
 
-			new_supplies += args.renew_rights_every * max(new_supply, 0)
-			if args.perishing_supplies:
-				seller.supply = args.renew_rights_every * max(new_supply, 0)
-			else:
-				seller.supply += args.renew_rights_every * max(new_supply, 0)
 
-		total_supply = 0
-		for seller in self.sellers:
-			total_supply += seller.supply
-
-		# Distribute rights
-		if self.args.fairness_model[:7] == 'eternal':
-			new_rights = get_talmud_split(self.consumptions - np.array([min(b.need, b.supply) for b in self.buyers ]), new_supplies)
+		for s in S:
+			# seller supply
+			model += xsum(g[s][b] for b in B) <= np.clip(vol_good[s] - epsilon, 0, np.inf)
+		
+		for t in T:
+			# trader supply
+			model += xsum(r[t][b] for b in B) <= np.clip(vol_right[t] - epsilon, 0, np.inf)
+		
+		status = model.optimize()
+		
+		if verbose > 1:
+			for c in model.constrs:
+				if c.slack < 1 and "once" not in c.name and "all supply sold" not in c.name:
+					print(c.name, c.slack)
+		
+		total = 0
+		
+		matrix_g = np.zeros((args.num_sellers, args.num_buyers))
+		matrix_r = np.zeros((args.num_buyers, args.num_buyers))
+		
+		if status == OptimizationStatus.OPTIMAL:
+			for s in S:
+				for b in B:
+					if g[s][b].x > 0:
+						if verbose > 0:
+							print(f"{g[s][b]}: {g[s][b].x}.")
+						total += g[s][b].x
+					matrix_g[s][b] = g[s][b].x
+			for t in T:
+				for b in B:
+					if r[t][b].x > 0:
+						if verbose > 0:
+							print(f"{r[t][b]}: {r[t][b].x}.")
+					matrix_r[t][b] = r[t][b].x
+			if verbose > 0:
+				print(f"total: {total}")
 		else:
-			new_rights = get_talmud_split(self.consumptions - np.array([min(b.need, b.supply) for b in self.buyers ]), total_supply)
+			print("model infeasible.")
+				
+		e, s = self.ep_num, self.step_num
+		
+		# Copy whatever I had last market
+		self.seller_states[e, s, :, 5:6] = self.seller_states[e, s, :, 1:2].copy()
+		self.buyer_states[e, s, :, 11:14] = self.buyer_states[e, s, :, 1:4].copy()
+		
+		# Good
+		self.seller_states[e, s, :, 5] -= np.sum(matrix_g, axis=1)
+		self.buyer_states[e, s, :, 11] += np.sum(matrix_g, axis=0)
+		
+		# Money
+		cost_right = np.sum((matrix_r.T * prc_right).T, axis=0)
+		cost_supply = np.sum((matrix_g.T * prc_good).T, axis=0)
+		cost = cost_right + cost_supply
+		earning = np.sum(matrix_r, axis=1) * prc_right
+		self.buyer_states[e, s, :, 12] += earning - cost
+		
+		# Right
+		next_right = available_right + vol_right - np.sum(matrix_r, axis=1)
+		self.buyer_states[e, s, :, 13] = next_right
 
-		for earning, buyer, new_right in zip(self.earnings, self.buyers, new_rights):
-			buyer.money += earning * args.buyer_earning_per_day * args.renew_rights_every
-			buyer.rights = new_right
-			buyer.frustration += new_right
-			buyer.total_frustration += new_right
-
-	def get_total_supply(self):
-		return int(sum([seller.supply for seller in self.sellers]))
-
-	def reward_agents(self, seller_rewards, args, greedy):
-		if greedy:
-			for reward, seller in zip(seller_rewards, self.sellers):
-				self.greedy_seller_states[self.greedy_step_num, seller.id, 4] = reward + self.args.end_supply_reward * seller.supply
-
-			for id, (consumption, buyer) in enumerate(zip(self.consumptions, self.buyers)):
-				missing_supply = max(0, args.consumption_on_step - buyer.supply / consumption)
-				available_supply = min(buyer.supply / consumption, args.consumption_on_step)
-				reward = args.in_stock_supply_reward * available_supply + args.missing_supply_reward * missing_supply
-				self.greedy_buyer_states[self.greedy_step_num, id, 10] = reward
-
+		self.seller_states[e, s, :, 5] = np.clip(self.seller_states[e, s, :, 5], 0, self.seller_states[e, s, :, 1])
+		self.buyer_states[e, s, :, 11] = np.clip(self.buyer_states[e, s, :, 11], 0, np.inf)
+		self.buyer_states[e, s, :, 12] = np.clip(self.buyer_states[e, s, :, 12], 0, np.inf)
+		self.buyer_states[e, s, :, 13] = np.clip(self.buyer_states[e, s, :, 13], 0, self.buyer_states[e, s, :, 3])
+	
+	def trade(self, args):
+		if args.market_model == 'greedy' or args.market_model == 'random':
+			self.greedy_market_mechanism(args)
+		elif args.market_model == 'average' or args.market_model == 'absolute':
+			self.max_flow_market_mechanism(args)
 		else:
-			for reward, seller in zip(seller_rewards, self.sellers):
-				self.seller_states[self.step_num, seller.id, 4] = reward + self.args.end_supply_reward * seller.supply
+			raise Exception('Unknown market mechanism.')
+	
+	def reward_agents(self, args):
+		e, s = self.ep_num, self.step_num
+		
+		sold_good = self.seller_states[e, s, :, 1] - self.seller_states[e, s, :, 5]
+		reward = sold_good * self.seller_states[e, s, :, 3] * args.max_trade_price
+		self.seller_states[e, s, :, 4] = reward
+		
+		good = self.buyer_states[e, s, :, 11].copy()
+		reward = np.minimum(good, self.demands / args.renew_rights_every)
+		self.buyer_states[e, s, :, 10] = reward
+		
+		if args.reward_shaping and not self.eval:
+			money_now = self.buyer_states[e, s, :, 2]
+			money_next = self.buyer_states[e, s, :, 12] + self.earnings
+			shaping_reward = money_now - args.gamma * money_next
+			self.buyer_states[e, s, :, 10] += args.shaping_const * shaping_reward / self.earnings
+			
+			good_now = self.seller_states[e, s, :, 1]
+			good_next = self.seller_states[e, s, :, 5]
+			shaping_reward = good_now - args.gamma * good_next
+			self.seller_states[e, s, :, 4] += args.shaping_const * shaping_reward
+	
+	def transfer_to_next_trade(self, args):
+		if self.step_num + 1 == args.steps_in_episode:
+			return
+		
+		e, s, _s = self.ep_num, self.step_num, self.step_num + 1
+		good = self.buyer_states[e, s, :, 11].copy()
+		new_good = np.maximum(good - self.demands / args.renew_rights_every, 0)
+		self.buyer_states[e, _s, :, 1] = new_good
+		self.buyer_states[e, _s, :, 2] = self.buyer_states[e, s, :, 12].copy()
+		self.buyer_states[e, _s, :, 3] = self.buyer_states[e, s, :, 13].copy()
+		
+		next_good = self.seller_states[e, s, :, 5].copy()
+		self.seller_states[e, _s, :, 1] = next_good
+		prev_offered_vol = self.seller_states[e, s, :, 1] * self.seller_states[e, s, :, 2]
+		sold_vol = self.seller_states[e, s, :, 2] - next_good
+		self.seller_states[e, _s, :, 2] = (prev_offered_vol - sold_vol) / next_good
+		self.seller_states[e, _s, np.where(next_good == 0), 2] = 0
+		self.seller_states[e, _s, :, 3] = self.seller_states[e, s, :, 3]
 
-			for id, (consumption, buyer) in enumerate(zip(self.consumptions, self.buyers)):
-				missing_supply = max(0, args.consumption_on_step - buyer.supply / consumption)
-				available_supply = min(buyer.supply / consumption, args.consumption_on_step)
-				reward = args.in_stock_supply_reward * available_supply + args.missing_supply_reward * missing_supply
-				self.buyer_states[self.step_num, id, 10] = reward
+	@tf.function
+	def train_single_seller_actor(self, s_s, n_s_s, b_s, n_b_s, chosen_action, to_train):
+		self.sellers[to_train].train_actor(s_s, n_s_s, b_s, n_b_s, chosen_action)
 
-	def reward_buyers_at_end(self, greedy):
-		if greedy:
-			for buyer in self.buyers:
-				self.greedy_buyer_states[self.greedy_step_num, buyer.id, 10] += self.args.end_money_reward * buyer.money
+	@tf.function
+	def train_single_seller_critic(self, s_s, n_s_s, b_s, n_b_s, to_train):
+		self.sellers[to_train].train_critic(s_s, n_s_s, b_s, n_b_s)
 
-			for seller in self.sellers:
-				self.greedy_seller_states[self.greedy_step_num, seller.id, 4] += self.args.final_supply_reward * seller.supply
+	@tf.function
+	def train_single_buyer_actor(self, s_s, n_s_s, b_s, n_b_s, chosen_action, to_train):
+		self.buyers[to_train - self.args.num_sellers].train_actor(s_s, n_s_s, b_s, n_b_s, chosen_action)
 
-		else:
-			for buyer in self.buyers:
-				self.buyer_states[self.step_num, buyer.id, 10] += self.args.end_money_reward * buyer.money
+	@tf.function
+	def train_single_buyer_critic(self, s_s, n_s_s, b_s, n_b_s, to_train):
+		self.buyers[to_train - self.args.num_sellers].train_critic(s_s, n_s_s, b_s, n_b_s)
 
-			for seller in self.sellers:
-				self.seller_states[self.step_num, seller.id, 4] += self.args.final_supply_reward * seller.supply
+	@tf.function
+	def train_seller_actor(self, s_s, n_s_s, b_s, n_b_s, chosen_action, to_train):
+		for i, seller in enumerate(self.sellers):
+			if to_train is None or i == to_train:
+				seller.train_actor(s_s, n_s_s, b_s, n_b_s, chosen_action)
 
-	def consume_supply(self, args):
-		for consumption, buyer in zip(self.consumptions, self.buyers):
-			buyer.supply = max(buyer.supply - consumption * args.consumption_on_step, 0)
+	@tf.function
+	def train_seller_critic(self, s_s, n_s_s, b_s, n_b_s, to_train):
+		for i, seller in enumerate(self.sellers):
+			if to_train is None or i == to_train:
+				seller.train_critic(s_s, n_s_s, b_s, n_b_s)
 
-	def reset_episode(self, args, greedy):
-		self.step_in_episode = 0
+	@tf.function
+	def train_buyer_actor(self, s_s, n_s_s, b_s, n_b_s, chosen_action, to_train):
+		for i, buyer in enumerate(self.buyers):
+			if to_train is None or i + self.args.num_sellers == to_train:
+				buyer.train_actor(s_s, n_s_s, b_s, n_b_s, chosen_action)
 
-		buyer_money = [buyer.money for buyer in self.buyers]
-		buyer_supply = [buyer.supply for buyer in self.buyers]
-		seller_supply = [seller.supply for seller in self.sellers]
-
-		if greedy:
-			log = self.greedy_log
-			s = self.greedy_step_num
-			if s == 0:
-				s = self.memory_len
-			seller_states = self.greedy_seller_states.copy()
-			buyer_states = self.greedy_buyer_states.copy()
-		else:
-			log = self.log
-			s = self.step_num
-			if s == 0:
-				s = self.memory_len
-			seller_states = self.seller_states.copy()
-			buyer_states = self.buyer_states.copy()
-
-		log['ending_money_mean'].append(np.mean(buyer_money))
-		log['ending_money_std'].append(np.std(buyer_money))
-
-		log['ending_supply_mean'].append(np.mean(seller_supply))
-		log['ending_supply_std'].append(np.std(seller_supply))
-
-		log['ending_buyer_supply_mean'].append(np.mean(buyer_supply))
-		log['ending_buyer_supply_std'].append(np.std(buyer_supply))
-
-		buyer_returns = np.sum(buyer_states[s-100:s, :, -1], axis=0)
-		log['buyer_mean_return'].append(np.mean(buyer_returns))
-		log['buyer_std_return'].append(np.std(buyer_returns))
-		seller_returns = np.sum(seller_states[s-100:s, :, -1], axis=0)
-		log['seller_mean_return'].append(np.mean(seller_returns))
-		log['seller_std_return'].append(np.std(seller_returns))
-
-		supply_volume = np.mean(seller_states[s-100:s, :, 2] * seller_states[s-100:s, :, 1], axis=0)
-		log['supply_mean_volume'].append(np.mean(supply_volume))
-		log['supply_std_volume'].append(np.std(supply_volume))
-		supply_price = np.mean(seller_states[s-100:s, :, 3], axis=0) * self.args.max_trade_price
-		log['supply_mean_price'].append(np.mean(supply_price))
-		log['supply_std_price'].append(np.std(supply_price))
-		rights_volume = np.mean(buyer_states[s-100:s, :, 4] * buyer_states[s-100:s, :, 3], axis=0)
-		log['right_mean_volume'].append(np.mean(rights_volume))
-		log['right_std_volume'].append(np.std(rights_volume))
-		rights_price = np.mean(buyer_states[s-100:s, :, 5], axis=0) * self.args.max_trade_price
-		log['right_mean_price'].append(np.mean(rights_price))
-		log['right_std_price'].append(np.std(rights_price))
-
-		des_sup_volume = np.mean(buyer_states[s-100:s, :, 6], axis=0) * self.args.max_trade_volume
-		log['des_supply_mean_volume'].append(np.mean(des_sup_volume))
-		log['des_supply_std_volume'].append(np.std(des_sup_volume))
-		des_supply_price = np.mean(buyer_states[s-100:s, :, 7], axis=0) * self.args.max_trade_price
-		log['des_supply_mean_price'].append(np.mean(des_supply_price))
-		log['des_supply_std_price'].append(np.std(des_supply_price))
-		des_right_volume = np.mean(buyer_states[s-100:s, :, 8], axis=0) * self.args.max_trade_volume
-		log['des_right_mean_volume'].append(np.mean(des_right_volume))
-		log['des_right_std_volume'].append(np.std(des_right_volume))
-		des_right_price = np.mean(buyer_states[s-100:s, :, 9], axis=0) * self.args.max_trade_price
-		log['des_right_mean_price'].append(np.mean(des_right_price))
-		log['des_right_std_price'].append(np.std(des_right_price))
-
-		log['frustration_max'].append(np.max([buyer.frustration for buyer in self.buyers]))
-		log['total_frustration'].append(np.max([buyer.total_frustration for buyer in self.buyers]))
-
-		log['traded_rights'].append(np.sum(self.traded_rights))
-		self.traded_rights = np.zeros(shape=(args.steps_in_episode, ))
-		log['traded_supply'].append(np.sum(self.traded_supply))
-		self.traded_supply = np.zeros(shape=(args.steps_in_episode, ))
-
-		if greedy:
-			for i, buyer in enumerate(self.buyers):
-				self.greedy_buyer_states[self.greedy_step_num-1, i, 11] = buyer.frustration
-				self.greedy_buyer_states[self.greedy_step_num, i, 11] = buyer.total_frustration
-		else:
-			for i, buyer in enumerate(self.buyers):
-				self.buyer_states[self.step_num-1, i, 11] = buyer.frustration
-				self.buyer_states[self.step_num, i, 11] = buyer.total_frustration
-
-		for buyer in self.buyers:
-			buyer.on_episode_end(args)
-
-		for seller in self.sellers:
-			seller.on_episode_end(args)
-
-		self.reward_buyers_at_end(greedy)
-		self.adjust_exploration()
-
-	def adjust_exploration(self):
-		decay = (self.args.variance - self.args.min_variance) / self.args.min_variance_at
-		if self.variance > self.args.min_variance + decay:
-			self.variance -= decay
-		else:
-			self.variance = self.args.min_variance
-
-		decay = (self.args.mask_prob - self.args.min_mask_prob) / self.args.min_mask_prob_at
-		if self.mask_prob > self.args.min_mask_prob + decay:
-			self.mask_prob -= decay
-		else:
-			self.mask_prob = self.args.min_mask_prob
-
-	def train_all(self):
-		# Seller training
-		samples = np.random.randint(0, min(self.total_step_num, self.args.max_memory_len) - 1, self.args.batch_size)
-		next_samples = samples + 1
-		buyer_data = self.buyer_states[samples]
-		buyer_next_data = self.buyer_states[next_samples]
-		seller_data = self.seller_states[samples]
-		seller_next_data = self.seller_states[next_samples]
-
-		if self.total_step_num % (2 * self.args.train_every * self.args.num_sellers) == 0:
-			self.train_sellers_actor(buyer_data, seller_data)
-		self.train_sellers_critics(buyer_data, seller_data, buyer_next_data, seller_next_data)
-
+	@tf.function
+	def train_buyer_critic(self, s_s, n_s_s, b_s, n_b_s, to_train):
+		for i, buyer in enumerate(self.buyers):
+			if to_train is None or i + self.args.num_sellers == to_train:
+				buyer.train_critic(s_s, n_s_s, b_s, n_b_s)
+	
+	def train(self, args, train_id=None):
+		scaled_seller_states = self.scaled_seller_states()[:self.ep_num, ..., :5].reshape((-1, args.num_sellers, 5))
+		scaled_buyer_states = self.scaled_buyer_states()[:self.ep_num, ..., :11].reshape((-1, args.num_buyers, 11))
+		seller_states = self.seller_states[:self.ep_num, ..., :5].reshape((-1, args.num_sellers, 5))
+		buyer_states = self.buyer_states[:self.ep_num, ..., :11].reshape((-1, args.num_buyers, 11))
+		
 		# Buyer training
-		samples = np.random.randint(0, min(self.total_step_num, self.args.max_memory_len) - 1, self.args.batch_size)
-		next_samples = samples + 1
-		buyer_data = self.buyer_states[samples]
-		buyer_next_data = self.buyer_states[next_samples]
-		seller_data = self.seller_states[samples]
-		seller_next_data = self.seller_states[next_samples]
-
-		if self.total_step_num % (2 * self.args.train_every * self.args.num_buyers) == 0:
-			self.train_buyers_actor(buyer_data, seller_data)
-		self.train_buyers_critics(buyer_data, seller_data, buyer_next_data, seller_next_data)
-
-	@tf.function
-	def train_sellers_actor(self, buyer_states, seller_states):
-		for seller in self.sellers:
-			seller.train_actor(buyer_states, seller_states)
-
-	@tf.function
-	def train_sellers_critics(self, buyer_states, seller_states, next_buyer_states, next_seller_states):
-		for seller in self.sellers:
-			seller.train_critics(buyer_states, seller_states, next_buyer_states, next_seller_states)
-
-	@tf.function
-	def train_buyers_actor(self, buyer_states, seller_states):
-		for buyer in self.buyers:
-			buyer.train_actor(buyer_states, seller_states)
-
-	@tf.function
-	def train_buyers_critics(self, buyer_states, seller_states, next_buyer_states, next_seller_states):
-		for buyer in self.buyers:
-			buyer.train_critics(buyer_states, seller_states, next_buyer_states, next_seller_states)
-
-	def save_all(self):
+		max_id = (self.ep_num - 1) * args.steps_in_episode
+		samples = np.random.randint(0, max_id, args.batch_size)
+		s_s = scaled_seller_states[samples]
+		n_s_s = scaled_seller_states[samples + 1]
+		b_s = scaled_buyer_states[samples]
+		n_b_s = scaled_buyer_states[samples + 1]
+		chosen_action = buyer_states[samples, :, 4:10]
+		if train_id is None:
+			if self.step_num % args.actor_update_freq == 0:
+				self.train_buyer_actor(s_s, n_s_s, b_s, n_b_s, chosen_action, train_id)
+			self.train_buyer_critic(s_s, n_s_s, b_s, n_b_s, train_id)
+		elif train_id >= args.num_sellers:
+			if self.step_num % args.actor_update_freq == 0:
+				self.train_single_buyer_actor(s_s, n_s_s, b_s, n_b_s, chosen_action, train_id)
+			self.train_single_buyer_critic(s_s, n_s_s, b_s, n_b_s, train_id)
+			
+		# Seller training
+		samples = np.random.randint(0, max_id, args.batch_size)
+		if args.sellers_share_buffer and self.multiagent:
+			permutation = np.random.permutation(args.num_sellers)
+			scaled_seller_states = scaled_seller_states[:, permutation]
+		s_s = scaled_seller_states[samples]
+		n_s_s = scaled_seller_states[samples + 1]
+		b_s = scaled_buyer_states[samples]
+		n_b_s = scaled_buyer_states[samples + 1]
+		chosen_action = seller_states[samples, :, 2:4]
+		if train_id is None:
+			if self.step_num % args.actor_update_freq == 0:
+				self.train_seller_actor(s_s, n_s_s, b_s, n_b_s, chosen_action, train_id)
+			self.train_seller_critic(s_s, n_s_s, b_s, n_b_s, train_id)
+		elif train_id < args.num_sellers:
+			if self.step_num % args.actor_update_freq == 0:
+				self.train_single_seller_actor(s_s, n_s_s, b_s, n_b_s, chosen_action, train_id)
+			self.train_single_seller_critic(s_s, n_s_s, b_s, n_b_s, train_id)
+	
+	def reward_at_end(self, args):
+		good_seller = self.seller_states[self.ep_num, self.step_num, :, 1].copy()
+		self.seller_states[self.ep_num, self.step_num, :, 4] += args.final_good_reward * good_seller
+		
+		money_buyer = self.buyer_states[self.ep_num, self.step_num, :, 2].copy()
+		self.buyer_states[self.ep_num, self.step_num, :, 10] += args.final_money_reward * money_buyer
+		
+	def reset(self, args):
+		self.ep_num += 1
+		self.step_num = 0
+	
+	def init_single(self, batch_num):
+		self.ep_num = (batch_num + 1) * self.args.eval_every
 		path = os.getcwd()
-		os.chdir('Results/'+self.dir_name)
-		np.save('seller_states.npy', self.seller_states)
-		np.save('greedy_seller_states.npy', self.greedy_seller_states)
-		np.save('buyer_states.npy', self.buyer_states)
-		np.save('greedy_buyer_states.npy', self.greedy_buyer_states)
-
-		dir_name = f'models'
-		if not os.path.isdir(dir_name):
-			os.mkdir(dir_name)
-		os.chdir(dir_name)
-		for id, buyer in enumerate(self.buyers):
-			buyer.save(id)
-
-		for id, seller in enumerate(self.sellers):
-			seller.save(id)
+		os.chdir(self.dir_name)
+		self.seller_states[:self.ep_num] = np.load('seller_states.npy')
+		self.buyer_states[:self.ep_num] = np.load('buyer_states.npy')
+		
+		os.chdir('models')
+		for s in self.sellers:
+			s.load(batch_num)
+		
+		for b in self.buyers:
+			b.load(batch_num)
+		
 		os.chdir(path)
-
-	def load_all(self, load_from=-1):
+	
+	def save(self, batch_num, models=True):
 		path = os.getcwd()
-		os.chdir('./Results')
-		folders = os.listdir('.')
-		os.chdir(f'./{folders[load_from]}/models')
-		for id, buyer in enumerate(self.buyers):
-			buyer.load(id)
-
-		for id, seller in enumerate(self.sellers):
-			seller.load(id)
+		os.chdir(self.dir_name)
+		
+		np.save('seller_states.npy', self.seller_states[:self.ep_num])
+		np.save('buyer_states.npy', self.buyer_states[:self.ep_num])
+		
+		if models:
+			os.chdir('models')
+			for b in self.buyers:
+				b.save(batch_num)
+		
+			for s in self.sellers:
+				s.save(batch_num)
+		
 		os.chdir(path)
-
-	def step(self, args, greedy):
-		# Resupply sellers and buyers
-		if self.step_in_episode % self.args.renew_rights_every == 0:
+	
+	def save_single(self, batch, participant):
+		path = os.getcwd()
+		os.chdir(self.dir_name + '/models')
+		
+		if participant < self.args.num_sellers:
+			self.sellers[participant].save(batch, eval=True)
+		else:
+			self.buyers[participant - self.args.num_sellers].save(batch, eval=True)
+		
+		os.chdir(path)
+	
+	def run_market(self, args, train_id=None):
+		if self.ep_num >= self.seller_states.shape[0]:
+			return
+		
+		if self.step_num % args.renew_rights_every == 0:
 			self.resupply(args)
-		if greedy:
-			self.greedy_seller_states[self.greedy_step_num, :, 0] = self.step_in_episode / (args.steps_in_episode - 1)
-			self.greedy_buyer_states[self.greedy_step_num, :, 0] = self.step_in_episode / (args.steps_in_episode - 1)
-
+			
+			self.offer_good()
+			
+			self.distribute_right()
+		
+		t = self.step_num / (args.steps_in_episode - 1)
+		self.seller_states[self.ep_num, self.step_num, :, 0] = t
+		self.buyer_states[self.ep_num, self.step_num, :, 0] = t
+		
+		self.offer_right()
+		
+		self.make_orders()
+		
+		self.trade(args)
+		
+		self.reward_agents(args)
+		
+		self.transfer_to_next_trade(args)
+		
+		samples = (self.ep_num - 1) * args.steps_in_episode
+		if not self.eval and samples > 2 * args.batch_size:
+			self.train(args, train_id)
+		
+		if self.step_num + 1 == args.steps_in_episode:
+			self.reward_at_end(args)
+			self.reset(args)
 		else:
-			self.seller_states[self.step_num, :, 0] = self.step_in_episode / (args.steps_in_episode - 1)
-			self.buyer_states[self.step_num, :, 0] = self.step_in_episode / (args.steps_in_episode - 1)
+			self.step_num += 1
+	
+	def simulate_crisis(self, args, to_train=None):
+		for _ in range(args.steps_in_episode):
+			self.run_market(args, to_train)
+	
+	def evaluate(self, batch_num, p=None):
+		self.ep_num = 0
+		self.seller_states[...] = 0
+		self.buyer_states[...] = 0
+		
+		path = os.getcwd()
+		os.chdir(self.dir_name + '/models')
+		for s in self.sellers:
+			s.load(batch_num)
+		
+		for b in self.buyers:
+			b.load(batch_num)
+		
+		if p is not None:
+			if p < self.args.num_sellers:
+				self.sellers[p].load(batch_num, eval=True)
+			else:
+				self.buyers[p - self.args.num_sellers].load(batch_num, eval=True)
+			
+		os.chdir(path)
+		
+		for _ in range(self.args.eval_for):
+			for _ in range(self.args.steps_in_episode):
+				self.run_market(self.args, p)
 
-		# First, sellers make their offers
-		self.make_offers(greedy)
+		seller_return = np.mean(np.sum(self.seller_states[..., 4], axis=1), axis=0)
+		buyer_return = np.mean(np.sum(self.buyer_states[..., 10], axis=1), axis=0)
+		
+		return np.concatenate([seller_return, buyer_return], axis=0)
+		
 
-		# Second, the buyers react by offering rights to sell
-		self.offer_rights(greedy)
+			
+			
+			
 
-		# Lastly, order all
-		self.order_supply(greedy)
-
-		# Actually trade rights
-		self.trade_rights(greedy)
-
-		# Trade supplies
-		seller_rewards = self.trade_supply(greedy)
-
-		# Reward (only if we added the state for training also)
-		self.reward_agents(seller_rewards, args, greedy)
-
-		self.consume_supply(args)
-
-		if self.total_step_num > 2 * self.args.batch_size and self.total_step_num % args.train_every == 0:
-
-			self.train_all()
-
-		if greedy:
-			self.greedy_step_num += 1
-			self.step_in_episode += 1
-		else:
-			self.total_step_num += 1
-			self.step_num = self.total_step_num % self.memory_len
-			if self.step_num == 0:
-				print('Buffer full!')
-			self.step_in_episode += 1
-
-
-
+	@tf.function
+	def price_good_tf(self, seller_states, buyer_states):
+		actions = tf.TensorArray(tf.float32, size=self.args.num_sellers)
+		for i, seller in enumerate(self.sellers):
+			action = seller.mean_action(seller_states[tf.newaxis, i, ...], buyer_states[tf.newaxis, ...])[0]
+			
+			actions = actions.write(i, action)
+		
+		actions = actions.stack()
+		return actions
+	
+	def price_good(self, seller_states, buyer_states):		
+		actions = self.price_good_tf(seller_states, buyer_states)
+		prices = actions.numpy()[:, 1] * self.args.max_trade_price
+		
+		return np.mean(prices)

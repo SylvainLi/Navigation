@@ -1,221 +1,107 @@
 import tensorflow as tf
-from tensorflow.keras.regularizers import l2
 import tensorflow_probability as tfp
 
-import numpy as np
-
-class Buyer_Actor():
-	def __init__(self, args):
-		seller_offers = tf.keras.Input(shape=(args.num_sellers, 2))  # Volume and price of offered goods
-		my_state = tf.keras.Input(shape=(3, ))  # This buyers amount of rights, money and supply stored plus step num
-		rights_offers = tf.keras.Input(shape=(args.num_buyers - 1, 2))  # What amount of rights at what price are the others offering
-
-		flat_seller_offers = tf.keras.layers.Flatten()(seller_offers)
-		hidden_sell = tf.keras.layers.Concatenate()([flat_seller_offers, my_state])
-		#hidden_sell = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu', kernel_regularizer=l2(args.l2))(hidden_sell)
-		hidden_sell = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu', kernel_regularizer=l2(args.l2))(hidden_sell)
-
-		to_sell = tf.keras.layers.Dense(2, activation='sigmoid', kernel_regularizer=l2(args.l2))(hidden_sell)
-
-		flat_rights_offers = tf.keras.layers.Flatten()(rights_offers)
-		hidden_buy = tf.keras.layers.Concatenate()([flat_seller_offers, my_state, flat_rights_offers, to_sell])
-		#hidden_buy = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu', kernel_regularizer=l2(args.l2))(hidden_buy)
-		hidden_buy = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu', kernel_regularizer=l2(args.l2))(hidden_buy)
-
-		to_buy = tf.keras.layers.Dense(4, activation='sigmoid')(hidden_buy)
-
-		self.actor = tf.keras.Model(inputs={'supply_offers': seller_offers, 'my_state': my_state, 'rights_offered': rights_offers},
-										   outputs={'sell': to_sell, 'buy': to_buy})
-
-		self.actor.compile(optimizer=tf.keras.optimizers.Adam(args.learning_rate, global_clipnorm=args.clip_norm))
-		self.target_actor = tf.keras.models.clone_model(self.actor)
-
-class Seller_Actor():
-	def __init__(self, args):
-		buyer_state = tf.keras.Input(shape=(args.num_buyers, 3))
-		my_state = tf.keras.Input(shape=(1, ))
-
-		flat_state = tf.keras.layers.Flatten()(buyer_state)
-		hidden = tf.keras.layers.Concatenate()([flat_state, my_state])
-		hidden = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu', kernel_regularizer=l2(args.l2))(hidden)
-		#hidden = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu', kernel_regularizer=l2(args.l2))(hidden)
-		to_sell = tf.keras.layers.Dense(2, activation='sigmoid')(hidden)  # Volume and price for supply to sell
-
-		self.actor = tf.keras.Model(inputs={'b_state': buyer_state, 'my_state': my_state},
-									outputs=to_sell)
-
-		self.actor.compile(optimizer=tf.keras.optimizers.Adam(args.learning_rate, global_clipnorm=args.clip_norm))
-		self.target_actor = tf.keras.models.clone_model(self.actor)
-
-class Buyer():
-	def __init__(self, args, env, need, earning, id, actor):
-		self.supply = args.buyer_starting_money
-		self.money = args.buyer_starting_supply
-		self.rights = 0
-		self.frustration = 0
-		self.total_frustration = 0
-
-		self.need = need
-		self.earning = earning
-		self.args = args
-		self.id = id
-
-		self.actor = actor.actor
-		self.target_actor = actor.target_actor
-		self.get_critics(args, env)
-
-	def train_actor(self, buyer_states, seller_states):
-		seller_offers = seller_states[:, :, 2:4]
-
-		my_state = buyer_states[:, self.id, :4]
-		offered_rights = tf.concat([buyer_states[:, :self.id, 4:6], buyer_states[:, self.id+1:, 4:6]], axis=-2)
-
-		seller_s = seller_states[..., 1:4]
-		buyer_s = tf.concat([buyer_states[:, :self.id, 1:10], buyer_states[:, self.id+1:, 1:10]], axis=-2)
-
-		with tf.GradientTape() as actor_tape_sell:
-			action = self.actor({'supply_offers': seller_offers, 'my_state': my_state[..., 1:],
-								 'rights_offered': offered_rights}, training=True)
-
-			values = self.critic({'seller_states': seller_s, 'buyer_states': buyer_s, 'my_state': my_state,
-									  'action_sell': action['sell'], 'action_buy': action['buy']}, training=True)
-			actor_loss_sell = - tf.reduce_mean(values)
-			for var in self.actor.trainable_variables:
-				actor_loss_sell += self.args.l2 * tf.nn.l2_loss(var)
-
-			actor_loss_sell += self.args.c_mean * tf.keras.losses.MeanSquaredError()(y_true=0.5, y_pred=action['sell'])
-			actor_loss_sell += self.args.c_mean * tf.keras.losses.MeanSquaredError()(y_true=0.5, y_pred=action['buy'])
-
-		self.actor.optimizer.minimize(actor_loss_sell, self.actor.trainable_variables, tape=actor_tape_sell)
-
-		for var, target_var in zip(self.actor.trainable_variables, self.target_actor.trainable_variables):
-			target_var.assign(target_var * (1 - self.args.target_tau) + var * self.args.target_tau)
-
-		for var, target_var in zip(self.critic.trainable_variables, self.target_critic.trainable_variables):
-			target_var.assign(target_var * (1 - self.args.target_tau) + var * self.args.target_tau)
-
-	def train_critics(self, buyer_states, seller_states, next_buyer_states, next_seller_states):
-		rewards = buyer_states[:, self.id, 10]
-		dones = tf.cast(buyer_states[:, self.id, 0] >= 1., tf.float32)
-		returns = rewards + self.args.gamma * (1-dones) * self.predict_value(next_buyer_states, next_seller_states)
-
-		buy_actions = buyer_states[:, self.id, 6:10]
-		sell_actions = buyer_states[:, self.id, 4:6]
-		seller_s = seller_states[..., 1:4]
-		buyer_s = tf.concat([buyer_states[..., :self.id, 1:10], buyer_states[..., self.id+1:, 1:10]], axis=-2)
-		my_state = buyer_states[:, self.id, :4]
-
-		with tf.GradientTape() as critic_tape:
-			pred_values = self.critic({'seller_states': seller_s, 'buyer_states': buyer_s, 'my_state': my_state,
-									   'action_sell': sell_actions, 'action_buy': buy_actions}, training=True)
-			critic_loss = self.critic.compiled_loss(y_true=returns, y_pred=pred_values)
-			for var in self.critic.trainable_variables:
-				critic_loss += self.args.l2 * tf.nn.l2_loss(var)
-		
-		self.critic.optimizer.minimize(critic_loss, self.critic.trainable_variables, tape=critic_tape)
-
-	def get_critics(self, args, env):
-		seller_state = tf.keras.Input(shape=(args.num_sellers, 3))
-		buyer_states = tf.keras.Input(shape=(args.num_buyers - 1, 9))
-		my_state = tf.keras.Input(shape=(4,))
-		action_sell = tf.keras.Input(shape=(2,))
-		action_buy = tf.keras.Input(shape=(4,))
-
-		flat_seller_offers = tf.keras.layers.Flatten()(seller_state)
-		flat_rights_offers = tf.keras.layers.Flatten()(buyer_states)
-		hidden = tf.keras.layers.Concatenate()([flat_seller_offers, flat_rights_offers, action_sell, action_buy, my_state])
-
-		x = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(hidden)
-		x = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(x)
-		#x = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(x)
-
-		value_1 = tf.keras.layers.Dense(1, activation='linear')(x)[:, 0]
-
-		y = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(hidden)
-		y = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(y)
-		#y = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(y)
-
-		value_2 = tf.keras.layers.Dense(1, activation='linear')(y)[:, 0]
-
-		value = tf.minimum(value_1, value_2)
-
-		self.critic = tf.keras.Model(inputs={'seller_states': seller_state, 'buyer_states': buyer_states,
-											   'action_sell': action_sell, 'action_buy': action_buy, 'my_state': my_state},
-									   outputs=value)
-		self.critic.compile(optimizer=tf.keras.optimizers.Adam(args.learning_rate, global_clipnorm=args.clip_norm),
-							  loss=tf.keras.losses.MeanSquaredError())
-		self.target_critic = tf.keras.models.clone_model(self.critic)
-
-	def predict_sell_action(self, seller_offers, my_state):
-		rights = tf.zeros((1, self.args.num_buyers - 1, 2))
-		actions = self.target_actor({'supply_offers': seller_offers, 'my_state': my_state, 'rights_offered': rights})['sell']
-		return actions
-
-	def predict_buy_action(self, seller_offers, my_state, rights_offers):
-		actions = self.target_actor({'supply_offers': seller_offers, 'my_state': my_state, 'rights_offered': rights_offers})['buy']
-		return actions
-
-	def predict_value(self, buyer_states, seller_states):
-		my_state = buyer_states[:, self.id, :4]
-		rights_offers = tf.concat([buyer_states[:, :self.id, 4:6], buyer_states[:, self.id+1:, 4:6]], axis=-2)
-		seller_offers = seller_states[..., 2:4]
-
-		actions = self.target_actor({'supply_offers': seller_offers, 'my_state': my_state[..., 1:],
-									 'rights_offered': rights_offers})
-
-		other_s_states = seller_states[..., 1:4]
-		other_b_states = tf.concat([buyer_states[..., :self.id, 1:10], buyer_states[..., self.id+1:, 1:10]], axis=-2)
-		values = self.target_critic({'seller_states': other_s_states, 'buyer_states': other_b_states,
-									 'my_state': my_state, 'action_sell': actions['sell'], 'action_buy': actions['buy']})
-		return values
-
-	def on_episode_end(self, args):
-		self.money = args.buyer_starting_money
-		self.supply = args.buyer_starting_supply
-		self.frustration = 0
-		self.total_frustration = 0
-
-	def save(self, id):
-		self.actor.save_weights(f'b_actor_{id}.model')
-		self.target_actor.save_weights(f'b_target_actor_{id}.model')
-		self.critic.save_weights(f'b_critic_{id}.model')
-		self.target_critic.save_weights(f'b_target_critic_{id}.model')
-
-	def load(self, id):
-		self.actor.load_weights(f'b_actor_{id}.model')
-		self.target_actor.load_weights(f'b_target_actor_{id}.model')
-		self.critic.load_weights(f'b_critic_{id}.model')
-		self.target_critic.load_weights(f'b_target_critic_{id}.model')
 
 class Seller():
-	def __init__(self, args, env, id, actor):
-		self.supply = args.seller_starting_money
-		self.money = args.seller_starting_supply
+	def __init__(self, args, i):
+		self.args, self.id = args, i
+
+		self.get_actor(args)
+		self.get_critic(args)
+	
+	def get_actor(self, args):
+		my_state = tf.keras.Input(shape=(1,))
+		buyer_states = tf.keras.Input(shape=(args.num_buyers, 2))
+
+		flat_buyer_states = tf.keras.layers.Flatten()(buyer_states)
+		hidden = tf.keras.layers.Concatenate()([my_state, flat_buyer_states])
+		hidden = tf.keras.layers.Dense(args.seller_hidden_actor, activation='relu')(hidden)
+		hidden = tf.keras.layers.Dense(args.seller_hidden_actor, activation='relu')(hidden)
 		
-		self.args = args
-		self.id = id
+		mu = tf.keras.layers.Dense(2, activation='sigmoid')(hidden)
+		sigma = tf.keras.layers.Dense(2, activation='softplus')(hidden) + 1e-4
+		
+		self.actor = tf.keras.Model(inputs={'my state': my_state, 'buyer states': buyer_states},
+									outputs={'m': mu, 's': sigma})
+		
+		self.actor.compile(optimizer=tf.keras.optimizers.Adam(args.actor_learning_rate, global_clipnorm=args.clip_norm))
+		self.target_actor = tf.keras.models.clone_model(self.actor)
+		
+	def get_critic(self, args):
+		my_state = tf.keras.Input(shape=(2,))
+		my_action = tf.keras.Input(shape=(2,))
+		seller_states = tf.keras.Input(shape=(args.num_sellers - 1, 3))
+		buyer_states = tf.keras.Input(shape=(args.num_buyers, 9))
+		
+		flat_seller_states = tf.keras.layers.Flatten()(seller_states)
+		flat_buyer_states = tf.keras.layers.Flatten()(buyer_states)
+		hidden = tf.keras.layers.Concatenate()([my_state, flat_seller_states, flat_buyer_states])
+		
+		x = tf.keras.layers.Dense(args.seller_hidden_critic, activation='relu')(hidden)
+		x = tf.keras.layers.Dense(args.seller_hidden_critic, activation='relu')(x)
 
-		self.actor = actor.actor
-		self.target_actor = actor.target_actor
-		self.get_critics(args, env)
+		y = tf.keras.layers.Dense(args.seller_hidden_critic, activation='relu')(hidden)
+		y = tf.keras.layers.Dense(args.seller_hidden_critic, activation='relu')(y)
+		
+		value = tf.minimum(x, y)[:, 0]
+		
+		self.critic = tf.keras.Model(inputs={'my state': my_state, 'my action': my_action,
+											 'seller states': seller_states, 'buyer states': buyer_states},
+									 outputs=value)
+		
+		self.critic.compile(optimizer=tf.keras.optimizers.Adam(args.critic_learning_rate, global_clipnorm=args.clip_norm))
+		self.target_critic = tf.keras.models.clone_model(self.critic)
 
-	def train_actor(self, buyer_states, seller_states):
-		ac_b_state = buyer_states[..., 1:4]
-		my_state = seller_states[:, self.id, :2]
-		b_states = buyer_states[..., 1:10]
-		s_states = tf.concat([seller_states[:, :self.id, 1:4], seller_states[:, self.id+1:, 1:4]], axis=-2)
-		with tf.GradientTape() as actor_tape:
-			action = self.actor({'b_state': ac_b_state, 'my_state': my_state[..., 1:]}, training=True)
+	def train_critic(self, seller_state, next_seller_state, buyer_state, next_buyer_state):
+		dones = tf.cast(seller_state[:, self.id, 0] >= 1, tf.float32)
+		if self.args.reward_clipping:
+			rewards = tf.clip_by_value(seller_state[:, self.id, 4], - self.args.clip_const, self.args.clip_const)
+		else:
+			rewards = seller_state[:, self.id, 4]
+		returns = rewards + self.args.gamma * (1 - dones) * self.value(next_seller_state, next_buyer_state)
+		
+		my_state = seller_state[:, self.id, :2]
+		my_action = seller_state[:, self.id, 2:4]
+		other_seller_states = tf.concat([seller_state[..., :self.id, 1:4], seller_state[..., self.id + 1:, 1:4]], axis=-2)
+		buyer_states = buyer_state[..., 1:10]
 
-			values = self.critic({'buyer_state': b_states, 'seller_state': s_states,
-								  'action': action, 'my_state': my_state}, training=True)
-			actor_loss = - tf.reduce_mean(values)
-			for var in self.actor.trainable_variables:
-				actor_loss += self.args.l2 * tf.nn.l2_loss(var)
+		with tf.GradientTape() as tape:
+			value = self.critic({'my state': my_state, 'my action': my_action,
+								 'seller states': other_seller_states, 'buyer states': buyer_states})
+			
+			loss = tf.keras.losses.MeanSquaredError()(y_true=returns, y_pred=value)
+			
+			for var in self.critic.trainable_variables:
+				loss += self.args.l2 * tf.nn.l2_loss(var)
 
-			actor_loss += self.args.c_mean * tf.keras.losses.MeanSquaredError()(y_true=0.5, y_pred=action)
+		self.critic.optimizer.minimize(loss, self.critic.trainable_variables, tape=tape)
 
-		self.actor.optimizer.minimize(actor_loss, self.actor.trainable_variables, tape=actor_tape)
+	def train_actor(self, seller_state, next_seller_state, buyer_state, next_buyer_state, chosen_action):
+		dones = tf.cast(seller_state[:, self.id, 0] >= 1, tf.float32)
+		if self.args.reward_clipping:
+			rewards = tf.clip_by_value(seller_state[:, self.id, 4], - self.args.clip_const, self.args.clip_const)
+		else:
+			rewards = seller_state[:, self.id, 4]
+		returns = rewards + self.args.gamma * (1 - dones) * self.value(next_seller_state, next_buyer_state)
+		values = self.value(seller_state, buyer_state)
+		
+		if self.args.upgoing_policy:
+			advantage = tf.maximum(returns - values, 0)
+		else:
+			advantage = returns - values
+		
+		with tf.GradientTape() as tape:
+			pred = self.actor({'my state': seller_state[:, self.id, 1:2], 'buyer states': buyer_state[..., 1:3]})
+			dist = tfp.distributions.Normal(pred['m'], pred['s'])
+			
+			loss = tf.reduce_mean(tf.math.reduce_sum(-dist.log_prob(chosen_action[:, self.id, :]), axis=1) * advantage)
+			
+			loss += -self.args.entropy_regularization_seller * tf.reduce_mean(tf.reduce_sum(dist.entropy(), axis=1))
+			
+			for var in self.critic.trainable_variables:
+				loss += self.args.l2 * tf.nn.l2_loss(var)
+
+		self.actor.optimizer.minimize(loss, self.actor.trainable_variables, tape=tape)
 		
 		for var, target_var in zip(self.actor.trainable_variables, self.target_actor.trainable_variables):
 			target_var.assign(target_var * (1 - self.args.target_tau) + var * self.args.target_tau)
@@ -223,87 +109,255 @@ class Seller():
 		for var, target_var in zip(self.critic.trainable_variables, self.target_critic.trainable_variables):
 			target_var.assign(target_var * (1 - self.args.target_tau) + var * self.args.target_tau)
 
-	def train_critics(self, buyer_states, seller_states, next_buyer_states, next_seller_states):
-		rewards = seller_states[:, self.id, 4]
-		dones = tf.cast(seller_states[:, self.id, 0] >= 1., tf.float32)
-		returns = rewards + self.args.gamma * (1-dones) * self.predict_value(next_buyer_states, next_seller_states)
-
-		action = seller_states[:, self.id, 2:4]
-		b_states = buyer_states[..., 1:10]
-		s_states = tf.concat([seller_states[:, :self.id, 1:4], seller_states[:, self.id+1:, 1:4]], axis=-2)
-		my_state = seller_states[:, self.id, :2]
-
-		if False:
-			tf.print()
-			tf.print(returns)
-			tf.print(rewards)
-			tf.print(self.predict_value(buyer_states, seller_states))
-			tf.print(self.predict_value(next_buyer_states, next_seller_states))
-
-		with tf.GradientTape() as critic_tape:
-			pred_values = self.critic({'buyer_state': b_states, 'seller_state': s_states,
-									   'action': action, 'my_state': my_state}, training=True)
-			critic_loss = self.critic.compiled_loss(y_true=returns, y_pred=pred_values)
-			for var in self.critic.trainable_variables:
-				critic_loss += self.args.l2 * tf.nn.l2_loss(var)
+	def action(self, my_state, buyer_states):
+		preds = self.target_actor({'my state': my_state, 'buyer states': buyer_states})
+		dist = tfp.distributions.Normal(preds['m'], preds['s'])
+		return tf.clip_by_value(dist.sample(), 0, 1)
+	
+	def value(self, seller_state, buyer_state):
+		my_state = seller_state[:, self.id, 1:2]
+		buyer_stock = buyer_state[..., 1:3]
+		action = self.target_actor({'my state': my_state, 'buyer states': buyer_stock})
 		
-		self.critic.optimizer.minimize(critic_loss, self.critic.trainable_variables, tape=critic_tape)
+		full_state = seller_state[:, self.id, :2]
+		other_seller_states = tf.concat([seller_state[..., :self.id, 1:4], seller_state[..., self.id+1:, 1:4]], axis=-2)
+		buyer_states = buyer_state[..., 1:10]
+		
+		if self.args.train_noise_clip > 0:
+			dist = tfp.distributions.Normal(action['m'], self.args.train_noise_var)
+			sampled_action = tf.clip_by_value(dist.sample(), -self.args.train_noise_clip, self.args.train_noise_clip)
+		else:
+			sampled_action = action['m']
+		
+		vol_good = sampled_action[:, 0] * seller_state[:, self.id, 1]
+		prc_good = sampled_action[:, 1] * self.args.max_trade_price
+		scaled_sampled_action = tf.concat([vol_good[:, tf.newaxis], prc_good[:, tf.newaxis]], axis=1)
+		
+		value = self.target_critic({'my state': full_state, 'my action': scaled_sampled_action,
+									'seller states': other_seller_states, 'buyer states': buyer_states})
+		
+		return value
 	
-	def get_critics(self, args, env):
-		b_state = tf.keras.Input(shape=(args.num_buyers, 9))
-		s_state = tf.keras.Input(shape=(args.num_sellers - 1, 3))
-		my_state = tf.keras.Input(shape=(2,))
-		action = tf.keras.Input(shape=(2,))
+	def save(self, ep_num, eval=False):
+		if eval:
+			self.actor.save_weights(f's_actor_{self.id}_{ep_num}_1.h5')
+			self.target_actor.save_weights(f's_target_actor_{self.id}_{ep_num}_1.h5')
+			self.critic.save_weights(f's_critic_{self.id}_{ep_num}_1.h5')
+			self.target_critic.save_weights(f's_target_critic_{self.id}_{ep_num}_1.h5')
+		else:
+			self.actor.save_weights(f's_actor_{self.id}_{ep_num}_0.h5')
+			self.target_actor.save_weights(f's_target_actor_{self.id}_{ep_num}_0.h5')
+			self.critic.save_weights(f's_critic_{self.id}_{ep_num}_0.h5')
+			self.target_critic.save_weights(f's_target_critic_{self.id}_{ep_num}_0.h5')
+	
+	def load(self, ep_num, eval=False):
+		if eval:
+			self.actor.load_weights(f's_actor_{self.id}_{ep_num}_1.h5')
+			self.target_actor.load_weights(f's_target_actor_{self.id}_{ep_num}_1.h5')
+			self.critic.load_weights(f's_critic_{self.id}_{ep_num}_1.h5')
+			self.target_critic.load_weights(f's_target_critic_{self.id}_{ep_num}_1.h5')
+		else:
+			self.actor.load_weights(f's_actor_{self.id}_{ep_num}_0.h5')
+			self.target_actor.load_weights(f's_target_actor_{self.id}_{ep_num}_0.h5')
+			self.critic.load_weights(f's_critic_{self.id}_{ep_num}_0.h5')
+			self.target_critic.load_weights(f's_target_critic_{self.id}_{ep_num}_0.h5')
 
-		flat_s_state = tf.keras.layers.Flatten()(s_state)
-		flat_b_state = tf.keras.layers.Flatten()(b_state)
-		hidden = tf.keras.layers.Concatenate()([flat_s_state, flat_b_state, action, my_state])
-		x = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(hidden)
-		x = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(x)
-		#x = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(x)
+	def mean_action(self, my_state, buyer_states):
+		preds = self.target_actor({'my state': my_state, 'buyer states': buyer_states})
+		dist = tfp.distributions.Normal(preds['m'], preds['s'])
+		return tf.clip_by_value(dist.mean(), 0, 1)
 
-		value_1 = tf.keras.layers.Dense(1, activation='linear')(x)[:, 0]
 
-		y = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(hidden)
-		y = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(y)
-		#y = tf.keras.layers.Dense(args.buyer_hidden_layer_size, activation='relu')(y)
+class Buyer():
+	def __init__(self, args, i):
+		self.args, self.id = args, i
 
-		value_2 = tf.keras.layers.Dense(1, activation='linear')(y)[:, 0]
+		self.get_actor(args)
+		self.get_critic(args)
+		
+	def get_actor(self, args):
+		my_state = tf.keras.Input(shape=(3,))
+		seller_states = tf.keras.Input(shape=(args.num_sellers, 2))
+		buyer_states = tf.keras.Input(shape=(args.num_buyers - 1, 2))
+		
+		flat_seller_states = tf.keras.layers.Flatten()(seller_states)
+		input1 = tf.keras.layers.Concatenate()([my_state, flat_seller_states])
+		
+		x = tf.keras.layers.Dense(args.buyer_hidden_actor, activation='relu')(input1)
+		
+		mu_sell = tf.keras.layers.Dense(2, activation='sigmoid')(x)
+		sigma_sell = tf.keras.layers.Dense(2, activation='softplus')(x) + 1e-4
 
-		value = tf.minimum(value_1, value_2)
-
-		self.critic = tf.keras.Model(inputs={'buyer_state': b_state, 'seller_state': s_state,
-											 'action': action, 'my_state': my_state},
+		input2 = tf.keras.layers.Flatten()(buyer_states)
+		y = tf.keras.layers.Concatenate()([input1, input2])
+		
+		y = tf.keras.layers.Dense(args.buyer_hidden_actor, activation='relu')(y)
+		
+		mu_buy = tf.keras.layers.Dense(4, activation='sigmoid')(y)
+		sigma_buy = tf.keras.layers.Dense(4, activation='softplus')(y) + 1e-4
+		
+		self.actor = tf.keras.Model(inputs={'my state': my_state, 'seller states': seller_states, 'buyer states': buyer_states},
+									outputs={'m sell': mu_sell, 's sell': sigma_sell, 'm buy': mu_buy, 's buy': sigma_buy})
+		
+		self.actor.compile(optimizer=tf.keras.optimizers.Adam(args.actor_learning_rate, global_clipnorm=args.clip_norm))
+		self.target_actor = tf.keras.models.clone_model(self.actor)
+	
+	def get_critic(self, args):
+		my_state = tf.keras.Input(shape=(10,))
+		seller_states = tf.keras.Input(shape=(args.num_sellers, 3))
+		buyer_states = tf.keras.Input(shape=(args.num_buyers - 1, 9))
+		
+		flat_seller_states = tf.keras.layers.Flatten()(seller_states)
+		flat_buyer_states = tf.keras.layers.Flatten()(buyer_states)
+		hidden = tf.keras.layers.Concatenate()([my_state, flat_seller_states, flat_buyer_states])
+		
+		x = tf.keras.layers.Dense(args.buyer_hidden_critic, activation='relu')(hidden)
+		x = tf.keras.layers.Dense(args.buyer_hidden_critic, activation='relu')(x)
+		
+		y = tf.keras.layers.Dense(args.buyer_hidden_critic, activation='relu')(hidden)
+		y = tf.keras.layers.Dense(args.buyer_hidden_critic, activation='relu')(y)
+		
+		value = tf.minimum(x, y)[:, 0]
+		
+		self.critic = tf.keras.Model(inputs={'my state': my_state, 'seller states': seller_states, 'buyer states': buyer_states},
 									 outputs=value)
-		self.critic.compile(optimizer=tf.keras.optimizers.Adam(args.learning_rate, global_clipnorm=args.clip_norm),
-							  loss=tf.keras.losses.MeanSquaredError())
+		
+		self.critic.compile(optimizer=tf.keras.optimizers.Adam(args.critic_learning_rate, global_clipnorm=args.clip_norm))
 		self.target_critic = tf.keras.models.clone_model(self.critic)
-	
-	def predict(self, buyer_states, my_state):
-		actions = self.target_actor({'b_state': buyer_states, 'my_state': my_state})
-		return actions
-	
-	def predict_value(self, buyer_states, seller_states):
-		my_state = seller_states[:, self.id, :2]
-		actions = self.target_actor({'b_state': buyer_states[..., 1:4], 'my_state': my_state[..., 1:]})
 
-		b_states = buyer_states[..., 1:10]
-		s_states = tf.concat([seller_states[:, :self.id, 1:4], seller_states[:, self.id+1:, 1:4]], axis=-2)
-		values = self.target_critic({'buyer_state': b_states, 'seller_state': s_states,
-									 'action': actions, 'my_state': my_state})
-		return values
+	def train_critic(self, seller_state, next_seller_state, buyer_state, next_buyer_state):
+		dones = tf.cast(buyer_state[:, self.id, 0] >= 1, tf.float32)
+		if self.args.reward_clipping:
+			rewards = tf.clip_by_value(buyer_state[:, self.id, 10], - self.args.clip_const, self.args.clip_const)
+		else:
+			rewards = buyer_state[:, self.id, 10]
+		returns = rewards + self.args.gamma * (1 - dones) * self.value(next_seller_state, next_buyer_state)
+		
+		my_full_state = buyer_state[:, self.id, :10]
+		seller_states = seller_state[..., 1:4]
+		other_buyer_states = tf.concat([buyer_state[..., :self.id, 1:10], buyer_state[..., self.id + 1:, 1:10]], axis=-2)
+
+		with tf.GradientTape() as tape:
+			value = self.critic({'my state': my_full_state, 'seller states': seller_states,
+								 'buyer states': other_buyer_states})
+			
+			loss = tf.keras.losses.MeanSquaredError()(y_pred=value, y_true=returns)
+			
+			for var in self.critic.trainable_variables:
+				loss += self.args.l2 * tf.nn.l2_loss(var)
+
+		self.critic.optimizer.minimize(loss, self.critic.trainable_variables, tape=tape)
+
+	def train_actor(self, seller_state, next_seller_state, buyer_state, next_buyer_state, chosen_action):
+		dones = tf.cast(buyer_state[:, self.id, 0] >= 1, tf.float32)
+		if self.args.reward_clipping:
+			rewards = tf.clip_by_value(buyer_state[:, self.id, 10], - self.args.clip_const, self.args.clip_const)
+		else:
+			rewards = buyer_state[:, self.id, 10]
+		returns = rewards + self.args.gamma * (1 - dones) * self.value(next_seller_state, next_buyer_state)
+		values = self.value(seller_state, buyer_state)
+		
+		if self.args.upgoing_policy:
+			advantage = tf.maximum(returns - values, 0)
+		else:
+			advantage = returns - values
+			
+		actions_sell = chosen_action[:, self.id, :2]
+		actions_buy = chosen_action[:, self.id, 2:]
+		
+		seller_offers = seller_state[:, :, 2:4]
+		my_state = buyer_state[:, self.id, 1:4]
+		right_offers = tf.concat([buyer_state[:, :self.id, 4:6], buyer_state[:, self.id+1:, 4:6]], axis=1)
+		
+		with tf.GradientTape() as tape:
+			pred = self.actor({'my state': my_state, 'buyer states': right_offers, 'seller states': seller_offers})
+			dist_sell = tfp.distributions.Normal(pred['m sell'], pred['s sell'])
+			dist_buy = tfp.distributions.Normal(pred['m buy'], pred['s buy'])
+			loss = tf.reduce_mean(tf.math.reduce_sum(-dist_sell.log_prob(actions_sell), axis=1) * advantage)
+			loss += tf.reduce_mean(tf.math.reduce_sum(-dist_buy.log_prob(actions_buy), axis=1) * advantage)
+
+			loss += -self.args.entropy_regularization_seller * tf.reduce_mean(tf.reduce_sum(dist_sell.entropy(), axis=1))
+			loss += -self.args.entropy_regularization_seller * tf.reduce_mean(tf.reduce_sum(dist_buy.entropy(), axis=1))
+
+			for var in self.critic.trainable_variables:
+				loss += self.args.l2 * tf.nn.l2_loss(var)
+
+		self.actor.optimizer.minimize(loss, self.actor.trainable_variables, tape=tape)
+		
+		for var, target_var in zip(self.actor.trainable_variables, self.target_actor.trainable_variables):
+			target_var.assign(target_var * (1 - self.args.target_tau) + var * self.args.target_tau)
+
+		for var, target_var in zip(self.critic.trainable_variables, self.target_critic.trainable_variables):
+			target_var.assign(target_var * (1 - self.args.target_tau) + var * self.args.target_tau)
+
+	def sell_action(self, seller_states, buyer_states):
+		my_state = buyer_states[:, self.id]
+		zeros = tf.zeros(shape=(1, self.args.num_buyers - 1, 2))
+		preds = self.target_actor({'my state': my_state, 'seller states': seller_states, 'buyer states': zeros})
+		dist = tfp.distributions.Normal(preds['m sell'], preds['s sell'])
+		return tf.clip_by_value(dist.sample(), 0, 1)
+
+	def buy_action(self, seller_states, buyer_states):
+		my_state = buyer_states[:, self.id, :3]
+		rights = tf.concat([buyer_states[..., :self.id, 3:5], buyer_states[..., self.id+1:, 3:5]], axis=-2)
+		preds = self.target_actor({'my state': my_state, 'seller states': seller_states, 'buyer states': rights})
+		dist = tfp.distributions.Normal(preds['m buy'], preds['s buy'])
+		return tf.clip_by_value(dist.sample(), 0, 1)
 	
-	def on_episode_end(self, args):
-		self.money, self.supply = args.seller_starting_money, args.seller_starting_money
+	def value(self, seller_state, buyer_state):
+		my_state = buyer_state[:, self.id, 1:4]
+		seller_offers = seller_state[:, :, 2:4]
+		right_offers = tf.concat([buyer_state[..., :self.id, 4:6], buyer_state[..., self.id+1:, 4:6]], axis=-2)
+		action = self.target_actor({'my state': my_state, 'seller states': seller_offers, 'buyer states': right_offers})
+		
+		seller_states = seller_state[..., 1:4]
+		other_buyer_states = tf.concat([buyer_state[..., :self.id, 1:10], buyer_state[..., self.id+1:, 1:10]], axis=-2)
+		
+		if self.args.train_noise_clip > 0:
+			dist_sell = tfp.distributions.Normal(action['m sell'], self.args.train_noise_var)
+			sampled_action_sell = tf.clip_by_value(dist_sell.sample(), -self.args.train_noise_clip, self.args.train_noise_clip)
+			dist_buy = tfp.distributions.Normal(action['m buy'], self.args.train_noise_var)
+			sampled_action_buy = tf.clip_by_value(dist_buy.sample(), -self.args.train_noise_clip, self.args.train_noise_clip)
+		else:
+			sampled_action_sell = action['m sell']
+			sampled_action_buy = action['m buy']
+		
+		vol_offer = sampled_action_sell[:, 0] * buyer_state[:, self.id, 3]
+		prc_offer = sampled_action_sell[:, 1] * self.args.max_trade_price
+		vol_desire_g = sampled_action_buy[:, 0] * self.args.max_trade_volume
+		prc_desire_g = sampled_action_buy[:, 1] * self.args.max_trade_price
+		vol_desire_r = sampled_action_buy[:, 2] * self.args.max_trade_volume
+		prc_desire_r = sampled_action_buy[:, 3] * self.args.max_trade_price
+		scaled_sampled_action = tf.concat([vol_offer[:, tf.newaxis], prc_offer[:, tf.newaxis],
+										   vol_desire_g[:, tf.newaxis], prc_desire_g[:, tf.newaxis],
+										   vol_desire_r[:, tf.newaxis], prc_desire_r[:, tf.newaxis]], axis=1)
 
-	def save(self, id):
-		self.actor.save_weights(f's_actor_{id}.model')
-		self.target_actor.save_weights(f's_target_actor_{id}.model')
-		self.critic.save_weights(f's_critic_{id}.model')
-		self.target_critic.save_weights(f's_target_critic_{id}.model')
-
-	def load(self, id):
-		self.actor.load_weights(f's_actor_{id}.model')
-		self.target_actor.load_weights(f's_target_actor_{id}.model')
-		self.critic.load_weights(f's_critic_{id}.model')
-		self.target_critic.load_weights(f's_target_critic_{id}.model')
+		my_full_state = tf.concat([buyer_state[:, self.id, :4], scaled_sampled_action], axis=1)
+		value = self.target_critic({'my state': my_full_state, 'seller states': seller_states,
+									'buyer states': other_buyer_states})
+		
+		return value
+	
+	def save(self, ep_num, eval=False):
+		if eval:
+			self.actor.save_weights(f'b_actor_{self.id}_{ep_num}_1.h5')
+			self.target_actor.save_weights(f'b_target_actor_{self.id}_{ep_num}_1.h5')
+			self.critic.save_weights(f'b_critic_{self.id}_{ep_num}_1.h5')
+			self.target_critic.save_weights(f'b_target_critic_{self.id}_{ep_num}_1.h5')
+		else:
+			self.actor.save_weights(f'b_actor_{self.id}_{ep_num}_0.h5')
+			self.target_actor.save_weights(f'b_target_actor_{self.id}_{ep_num}_0.h5')
+			self.critic.save_weights(f'b_critic_{self.id}_{ep_num}_0.h5')
+			self.target_critic.save_weights(f'b_target_critic_{self.id}_{ep_num}_0.h5')
+	
+	def load(self, ep_num, eval=False):
+		if eval:
+			self.actor.load_weights(f'b_actor_{self.id}_{ep_num}_1.h5')
+			self.target_actor.load_weights(f'b_target_actor_{self.id}_{ep_num}_1.h5')
+			self.critic.load_weights(f'b_critic_{self.id}_{ep_num}_1.h5')
+			self.target_critic.load_weights(f'b_target_critic_{self.id}_{ep_num}_1.h5')
+		else:
+			self.actor.load_weights(f'b_actor_{self.id}_{ep_num}_0.h5')
+			self.target_actor.load_weights(f'b_target_actor_{self.id}_{ep_num}_0.h5')
+			self.critic.load_weights(f'b_critic_{self.id}_{ep_num}_0.h5')
+			self.target_critic.load_weights(f'b_target_critic_{self.id}_{ep_num}_0.h5')

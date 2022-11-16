@@ -13,9 +13,9 @@ def market_equilibrium_MIP(market, args, verbose=1):
         [utility_G(buyer, x+market.buyers[buyer].supply)-utility_G(buyer, market.buyers[buyer].supply) for x in range(int(args.min_trade_volume), int(args.max_trade_volume) + 1, args.scale)] for buyer in range(args.num_buyers)]
 
     # Utility fonction for money, given a buyer and a quantity.
-    # Carefull it is only used to derivate the willingness to pay, only end_money_reward is used in the model.
+    # Carefull it is only used to derivate the willingness to pay, only final_money_reward is used in the model.
     sym_p = sympy.Symbol("sym_p")
-    def sym_utility_M(buyer): return args.end_money_reward*sym_p
+    def sym_utility_M(buyer): return args.final_money_reward*sym_p
 
     def willingness_to_pay(buyer, x): return utility_G(
         buyer, x) - sym_utility_M(buyer)
@@ -55,10 +55,10 @@ def market_equilibrium_MIP(market, args, verbose=1):
 
         for i in range(total_supply + 1):
 
-            # if args.fairness_model == 'eternal_talmud':
+            # if args.fairness == 'talmud':
             bundle_multiplicator = 2 * \
-                (i * args.scale) - market.buyers[b].rights  # double
-            if args.fairness_model == "free_market":
+                (i * args.scale) - market.buyer_states[0][0][b][3]  # double
+            if args.fairness == "free":
                 bundle_multiplicator = i*args.scale  # free market
             # The constraints are useless otherwise (and the solver is sad when I put a boolean in the constraint)
             if bundle_multiplicator != 0:
@@ -69,7 +69,7 @@ def market_equilibrium_MIP(market, args, verbose=1):
                     b].money, f"Budget constraint b{b} buys {i}"
 
 #  #                Budget constraint for same time transactions
-                # if i <= market.buyers[b].rights:
+                # if i <= market.buyer_states[0][0][b][3]:
                 #     if i*args.scale > 0:
                 #         model += price * i*args.scale - (1 - x[b][i]) * abs(
                 #             i*args.scale) * args.max_trade_price <= market.buyers[
@@ -79,7 +79,7 @@ def market_equilibrium_MIP(market, args, verbose=1):
                 #         bundle_multiplicator) * args.max_trade_price <= market.buyers[
                 #                 b].money, f"Budget constraint b{b} buys {i}"
                 # Right amount bought constraint.
-                model += price * args.end_money_reward * bundle_multiplicator - (1 - x[b][i]) * args.max_trade_price * args.end_money_reward * abs(
+                model += price * args.final_money_reward * bundle_multiplicator - (1 - x[b][i]) * args.max_trade_price * args.final_money_reward * abs(
                     bundle_multiplicator) <= utilities_good_array[b][i], f"Right amount constraint b{b} buys {i}"
     status = model.optimize()
 
@@ -98,7 +98,7 @@ def market_equilibrium_MIP(market, args, verbose=1):
                     items_bought += [i]
                     if verbose > 0:
                         print(
-                            f"buyer {b} buys {i} items starting with {market.buyers[b].rights} rights.")
+                            f"buyer {b} buys {i} items starting with {market.buyer_states[0][0][b][3]} rights.")
     else:
         print("model infeasible.")
     return price.x, items_bought, w_array
