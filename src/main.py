@@ -1,10 +1,9 @@
 #!/usr/bin/python
 
-from mip import *
 from machine_learning.environment import Marketplace
 import datetime
 from parametrize import *
-from equilibrium.model import *
+from equilibrium.approximation_algorithm import *
 from parser import parse_json
 
 dir_name = f'{str(datetime.datetime.now().date())}_{str(datetime.datetime.now().time())[:5].replace(":", "-")}'
@@ -24,6 +23,7 @@ if args.mode == "advice":
 
     price = market_equilibrium_approx(market, args, 0.0001, 0)
     print(f"We advice the price: {price}.")
+
 elif args.mode == "predict":
 
     # Run machine learning model.
@@ -34,5 +34,6 @@ elif args.mode == "predict":
     buyer_states = np.ones(shape=(args.num_buyers, 2))
     prices = market.price_good(seller_states, buyer_states)
     print(f"We predict the price: {prices}.")	
+
 else:
     print(usage)
