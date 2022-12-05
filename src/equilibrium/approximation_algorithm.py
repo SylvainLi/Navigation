@@ -2,7 +2,8 @@ import numpy as np
 from equilibrium.utility import *
 from mip import *
 
-
+# Given the demands of the buyers, find the highest price such that the market clears.
+# It might be used after the approximation algorithm to obtain a more precise price.
 def clean_price(market, demands, args, verbose=1):
     utility_G = get_utility_G(market, args)
 
@@ -29,7 +30,7 @@ def clean_price(market, demands, args, verbose=1):
             (i * args.scale) - market.buyer_states[0][0][b][3]  # double
         if args.fairness == "free":
             bundle_multiplicator = i*args.scale  # free market
-        # The constraints are useless otherwise (and the solver is sad when I put a boolean in the constraint)
+        # The constraints are useless otherwise.
         if bundle_multiplicator != 0:
 
             # Budget constraint.
@@ -54,7 +55,7 @@ def clean_price(market, demands, args, verbose=1):
         print("model infeasible.")
     return price.x
 
-
+# For a given price, return how many items buyer b would buy.
 def get_buyer_demand(b, market, price, args):
     utility_G = get_utility_G(market, args)
     demand = 0
@@ -64,7 +65,7 @@ def get_buyer_demand(b, market, price, args):
                                                                           get_coef_bundle(market, b, demand)) + " starting with: " + str(market.buyer_states[0][0][b][2]) + " and "+str(market.buyer_states[0][0][b][3]) + "rights \n"
     return demand, demand_string
 
-
+# return the global demand for the set of buyers.
 def get_demand_given_price(market, price,  args):
     total_demand = 0
     all_demand_str = ""
@@ -76,7 +77,8 @@ def get_demand_given_price(market, price,  args):
 
     return total_demand, all_demand_str
 
-
+# Polynomial algorithm using dichotomy on the price of goods and rights to find the highest price such that every item is sold.
+# It is assumed that the price of the rights equal the price of the goods.
 def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
     lower_bound = 0
     upper_bound = args.max_trade_price
