@@ -10,13 +10,13 @@ def get_coef_bundle(market, b, demand):
 
 def get_utility_G(market, args):
     # Utility fonction for good, given a buyer and a quantity.
-    utility_G = lambda buyer, x: args.missing_supply_reward + x * (-args.missing_supply_reward + args.in_stock_supply_reward[buyer]) / args.demands[buyer]
+    utility_G = lambda buyer, x: args.missing_supply_reward + x * (-args.missing_supply_reward + args.in_stock_supply_reward) / args.demands[buyer]
 
     if args.utility_type == "sqrt":
-        utility_G = lambda buyer, x: args.in_stock_supply_reward[buyer] / (
+        utility_G = lambda buyer, x: args.in_stock_supply_reward / (
             np.sqrt(np.sqrt(args.demands[buyer]))) * np.sqrt(np.sqrt(x))
     if args.utility_type == "ln":
-        utility_G = lambda buyer, x: args.in_stock_supply_reward[buyer] / (
+        utility_G = lambda buyer, x: args.in_stock_supply_reward / (
             np.log(args.demands[buyer]+1)) * np.log(x+1)
 
     if args.utility_type == "mixed":

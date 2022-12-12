@@ -59,7 +59,7 @@ def clean_price(market, demands, args, verbose=1):
 def get_buyer_demand(b, market, price, args):
     utility_G = get_utility_G(market, args)
     demand = 0
-    while demand <= market.offered_volume_good() + 1 and price * get_coef_bundle(market, b, demand+1) <= market.buyer_states[0][0][b][2] and price * args.final_money_reward * get_coef_bundle(market, b, demand+1) <= (utility_G(b, demand+1+market.buyers[b].supply)-utility_G(b, market.buyers[b].supply)):
+    while demand <= args.seller_earning_per_day + 1 and price * get_coef_bundle(market, b, demand+1) <= market.buyer_states[0][0][b][2] and price * args.final_money_reward * get_coef_bundle(market, b, demand+1) <= (utility_G(b, demand+1+market.buyer_states[0][0][b][1])-utility_G(b, market.buyer_states[0][0][b][1])):
         demand += 1
     demand_string = str(b) + " buys " + str(demand) + " at price: " + str(price * args.final_money_reward *
                                                                           get_coef_bundle(market, b, demand)) + " starting with: " + str(market.buyer_states[0][0][b][2]) + " and "+str(market.buyer_states[0][0][b][3]) + "rights \n"
@@ -89,7 +89,7 @@ def get_demand_array(market, price,  args):
 def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
     lower_bound = 0
     upper_bound = args.max_trade_price
-    total_supply = market.offered_volume_good()
+    total_supply = args.seller_earning_per_day
     str = ""
     
     if verbose > 0:
@@ -111,4 +111,4 @@ def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
             upper_bound = price
     if verbose > 0:
         print("")
-    return price
+    return lower_bound

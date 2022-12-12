@@ -30,4 +30,4 @@ An array "productSupply":
     -"price": number
 
 
-For an example, see the test.json file in the data folder
+For an example, see the test.json file in the data folder.
