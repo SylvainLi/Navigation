@@ -77,6 +77,13 @@ def get_demand_given_price(market, price,  args):
 
     return total_demand, all_demand_str
 
+def get_demand_array(market, price,  args):
+    arr = []
+    for b in range(args.num_buyers):
+        demand, demand_string = get_buyer_demand(b, market, price, args)
+        arr += [demand]
+    return arr
+
 # Polynomial algorithm using dichotomy on the price of goods and rights to find the highest price such that every item is sold.
 # It is assumed that the price of the rights equal the price of the goods.
 def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
