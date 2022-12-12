@@ -23,6 +23,9 @@ if args.mode == "advice":
 
     price = market_equilibrium_approx(market, args, 0.0001, 0)
     print(f"We advice the price: {price}.")
+    for b in range(args.num_buyers):
+        demand, demand_string = get_buyer_demand(b, market, price, args)
+        print(f"buyer {b} should buy {demand} items of good.")
 
 elif args.mode == "predict":
 
