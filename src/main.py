@@ -13,10 +13,13 @@ usage = """usage: python name.py <path> <mode>
     <mode> is either "advice", which will run the equilibrium algorithm and return the adviced price for the commodity,
     or "predict", which will run the machine learning program which will predict the prices according to the json file.
     """
-parse_json(args)
+data = parse_json(args)
 
 market = Marketplace(args, dir_name, multiagent=True, eval=False)
 market.resupply(args)
+market.seller_states[0][0][0][1] = args.seller_earning_per_day 
+market.seller_states[0][0][0][2] = 1
+market.distribute_right()
 args = market.args
 
 if args.mode == "advice":
@@ -25,7 +28,9 @@ if args.mode == "advice":
     print(f"We advice the price: {price}.")
     for b in range(args.num_buyers):
         demand, demand_string = get_buyer_demand(b, market, price, args)
-        print(f"buyer {b} should buy {demand} items of good.")
+        company_id = data["productDemand"][b]["company_id"]
+        bid_id = data["productDemand"][b]["id"]
+        print(f"buyer {company_id} should buy {demand} items of good for the bid {bid_id}.")
 
 elif args.mode == "predict":
 

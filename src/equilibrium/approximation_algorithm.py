@@ -55,14 +55,24 @@ def clean_price(market, demands, args, verbose=1):
         print("model infeasible.")
     return price.x
 
+def below_total_supply(demand, total_supply):
+    return demand <= total_supply
+
+def afforbable(b, demand, market, price, args ):
+    return price * get_coef_bundle(market, args, b, demand) <= args.earnings[b]
+
+def usefull(b, demand, market, price, args, utility_G):
+    b_stock = np.mean(args.demands) * market.buyer_states[0][0][b][1]
+    return price * args.final_money_reward * get_coef_bundle(market, args, b, demand) <= (utility_G(b, demand+b_stock)-utility_G(b, b_stock))
+
 # For a given price, return how many items buyer b would buy.
 def get_buyer_demand(b, market, price, args):
     utility_G = get_utility_G(market, args)
     demand = 0
-    while demand <= args.seller_earning_per_day + 1 and price * get_coef_bundle(market, b, demand+1) <= market.buyer_states[0][0][b][2] and price * args.final_money_reward * get_coef_bundle(market, b, demand+1) <= (utility_G(b, demand+1+market.buyer_states[0][0][b][1])-utility_G(b, market.buyer_states[0][0][b][1])):
+    while below_total_supply(demand + 1, args.seller_earning_per_day) and afforbable(b, demand + 1, market, price, args ) and usefull(b, demand + 1, market, price, args, utility_G):
         demand += 1
     demand_string = str(b) + " buys " + str(demand) + " at price: " + str(price * args.final_money_reward *
-                                                                          get_coef_bundle(market, b, demand)) + " starting with: " + str(market.buyer_states[0][0][b][2]) + " and "+str(market.buyer_states[0][0][b][3]) + "rights \n"
+                                                                          get_coef_bundle(market, args, b, demand)) + " starting with: " + str(market.buyer_states[0][0][b][2] * np.mean(args.earnings)) + " and "+str(market.buyer_states[0][0][b][3]) + "rights \n"
     return demand, demand_string
 
 # return the global demand for the set of buyers.
@@ -94,6 +104,9 @@ def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
     
     if verbose > 0:
         print("total supply: ", total_supply)
+        print("demands: ", args.demands)
+        print("earnings: ", args.earnings)
+    
     while upper_bound - lower_bound > epsilon:
         price = (upper_bound + lower_bound)/2
         nb_items_sold, str = get_demand_given_price(market, price, args)
@@ -101,14 +114,11 @@ def market_equilibrium_approx(market, args, epsilon=0.0001, verbose=0):
             print("items sold: ", nb_items_sold, "price: ", price)
 
         if nb_items_sold >= total_supply:
-            if verbose > 0:
-                print("lower bound: ", price, "upper bound: ", upper_bound)
             lower_bound = price
-
         elif nb_items_sold < total_supply:
-            if verbose > 0:
-                print(" lower bound: ", lower_bound, "upper bound: ", price)
             upper_bound = price
-    if verbose > 0:
-        print("")
+
+        if verbose > 0:
+            print("lower bound: ", lower_bound, "upper bound: ", upper_bound, "\n")
+
     return lower_bound

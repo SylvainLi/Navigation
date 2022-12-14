@@ -48,3 +48,5 @@ def parse_json(args):
     args.num_sellers = 1
     args.seller_earning_per_day = get_total_supply(data)
     args.max_trade_price = get_max_selling_price(data)
+    
+    return data
