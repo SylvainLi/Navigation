@@ -622,14 +622,13 @@ class Marketplace():
 	
 	def load(self, batch=0):
 		path = os.getcwd()
-		os.chdir('/machine_learning/example_models')
-		
-		os.chdir('models')
+		os.chdir('machine_learning/example_models')
+
 		for b in self.buyers:
-			b.load(batch_num)
-		
+			b.load(batch)
+
 		for s in self.sellers:
-			s.load(batch_num)
+			s.load(batch)
 		
 		os.chdir(path)
 	
