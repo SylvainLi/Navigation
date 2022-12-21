@@ -5,15 +5,20 @@ import datetime
 from parametrize import *
 from equilibrium.approximation_algorithm import *
 from parser import parse_json
+import numpy as np
 
 dir_name = f'{str(datetime.datetime.now().date())}_{str(datetime.datetime.now().time())[:5].replace(":", "-")}'
 
 usage = """usage: python name.py <path> <mode>
     <path> is the path to the input json file.
     <mode> is either "advice", which will run the equilibrium algorithm and return the adviced price for the commodity,
-    or "predict", which will run the machine learning program which will predict the prices according to the json file.
+    "predict-train", which will run the machine learning program which will predict the prices according to the json file,
+    or "predict-load", which loads a Crisis with two sellers and two buyers with earnings (1/2, 3/2) and demands (3/2, 1/2).
     """
 data = parse_json(args)
+
+if args.mode == 'predict-load':
+    args.num_sellers = 2
 
 market = Marketplace(args, dir_name, multiagent=True, eval=False)
 market.resupply(args)
@@ -32,7 +37,7 @@ if args.mode == "advice":
         bid_id = data["productDemand"][b]["id"]
         print(f"buyer {company_id} should buy {demand} items of good for the bid {bid_id}.")
 
-elif args.mode == "predict":
+elif args.mode == "predict-train":
 
     # Run machine learning model.
     for crisis in range(args.episodes):
@@ -41,7 +46,15 @@ elif args.mode == "predict":
     seller_states = np.ones(shape=(args.num_sellers, 1))  # The actual states go here
     buyer_states = np.ones(shape=(args.num_buyers, 2))
     prices = market.price_good(seller_states, buyer_states)
-    print(f"We predict the price: {prices}.")	
+    print(f"We predict the price: {prices}.")
+
+elif args.mode == 'predict-load':
+    market.load()
+
+    seller_states = np.ones(shape=(args.num_sellers, 1))  # The actual states go here
+    buyer_states = np.ones(shape=(args.num_buyers, 2))
+    prices = market.price_good(seller_states, buyer_states)
+    print(f"We predict the price: {prices}.")
 
 else:
     print(usage)
