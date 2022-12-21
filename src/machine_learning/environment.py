@@ -620,6 +620,19 @@ class Marketplace():
 		
 		os.chdir(path)
 	
+	def load(self, batch=0):
+		path = os.getcwd()
+		os.chdir('/machine_learning/example_models')
+		
+		os.chdir('models')
+		for b in self.buyers:
+			b.load(batch_num)
+		
+		for s in self.sellers:
+			s.load(batch_num)
+		
+		os.chdir(path)
+	
 	def run_market(self, args, train_id=None):
 		if self.ep_num >= self.seller_states.shape[0]:
 			return
