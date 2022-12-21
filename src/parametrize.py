@@ -23,8 +23,8 @@ parser.add_argument("--utility_type", default="sqrt", type=str, help="The utilit
 parser.add_argument("--price_G", default=1, type=float, help="the price of the items of good when fixed.")
 
 # Simulation params
-parser.add_argument("--num_sellers", default=4, type=int, help="Number of sellers on the market.")
-parser.add_argument("--num_buyers", default=4, type=int, help="Number of buyers on the market.")
+parser.add_argument("--num_sellers", default=2, type=int, help="Number of sellers on the market.")
+parser.add_argument("--num_buyers", default=2, type=int, help="Number of buyers on the market.")
 parser.add_argument("--batch_size", default=512, type=int, help="Batch size of the training.")
 parser.add_argument("--l2", default=0.01, type=float, help="L2 regularization constant.")
 parser.add_argument("--gamma", default=0.99, type=float, help="Decay factor.")
@@ -76,6 +76,6 @@ parser.add_argument("--end_supply_reward", default=-1/8, type=float, help="The r
 parser.add_argument("--final_good_reward", default=1/2, type=float, help="The reward gained by seller for each unit of supply at the end of an episode.")
 
 parser.add_argument("--path", default="../data/test.json", type=str, help="Path to the JSON file.")
-parser.add_argument("--mode", default="advice", type=str, help="Either \"advice\", which will run the equilibrium algorithm and return the adviced price for the commodity, or \"predict\", which will run the machine learning program which will predict the prices according to the json file.")
+parser.add_argument("--mode", default="predict-load", type=str, help="Either \"advice\", which will run the equilibrium algorithm and return the adviced price for the commodity, or \"predict\", which will run the machine learning program which will predict the prices according to the json file.")
 
 args = parser.parse_args([] if "__file__" not in globals() else None)
