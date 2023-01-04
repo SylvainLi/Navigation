@@ -17,8 +17,9 @@ Python packages:
 
 
 usage: python main.py --path __path__ --mode __mode__
-__path__ is the path to the input json file.
-__mode__ is either "advice", which will run the equilibrium algorithm and return the adviced price for the commodity,
+
+- __path__ is the path to the input json file.
+- __mode__ is either "advice", which will run the equilibrium algorithm and return the adviced price for the commodity,
 or "predict", which will run the machine learning program to predict the prices according to the json file.
 
 The input path should be a json file having the following hierarchy: 
