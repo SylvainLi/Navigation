@@ -31,11 +31,12 @@ if args.mode == "advice":
 
     price = market_equilibrium_approx(market, args, 0.0001, 0)
     print(f"We advice the price: {price}.")
+    print('Under this price, the buyers should buy the following amounts of goods: ')
     for b in range(args.num_buyers):
         demand, demand_string = get_buyer_demand(b, market, price, args)
         company_id = data["productDemand"][b]["company_id"]
         bid_id = data["productDemand"][b]["id"]
-        print(f"buyer {company_id} should buy {demand} items of good for the bid {bid_id}.")
+        print(f"Buyer {company_id} (id {bid_id}) should buy {demand} items of good.")
 
 elif args.mode == "predict-train":
 
